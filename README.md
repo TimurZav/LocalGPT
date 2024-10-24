@@ -45,7 +45,7 @@ ubuntu-drivers devices # install recommended drivers
 
 sudo apt install nvidia-driver-xxx # or sudo ubuntu-drivers autoinstall
 
-sudo nano /etc/security/limits.conf # insert this text ↓
+sudo nano /etc/security/limits.conf # insert this text without # ↓
 
 # *   soft    nproc   65000
 # *   hard    nproc   1000000
