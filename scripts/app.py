@@ -10,12 +10,11 @@ import gradio as gr
 from re import Pattern
 from __init__ import *
 from llama_cpp import Llama
+from datetime import datetime
 from gradio_modal import Modal
-from template import create_doc
 from tinydb import TinyDB, where
 from logging_custom import FileLogger
 from typing import List, Optional, Tuple
-from datetime import datetime, timedelta, date
 from langchain.docstore.document import Document
 from huggingface_hub.file_download import http_get
 from langchain_community.vectorstores import Chroma
@@ -187,31 +186,6 @@ class LocalChatGPT:
         else:
             return gr.update(placeholder=self.system_prompt, interactive=False)
 
-    @staticmethod
-    def calculate_end_date(history):
-        long_days = re.findall(r"\d{1,4} д", history[-1][0])
-        list_dates = []
-        for day in long_days:
-            day = int(day.replace(" д", ""))
-            start_dates = re.findall(r"\d{1,2}[.]\d{1,2}[.]\d{2,4}", history[-1][1])
-            for date_ in start_dates:
-                list_dates.append(date_)
-                end_date = datetime.strptime(date_, '%d.%m.%Y') + timedelta(days=day)
-                end_date = end_date.strftime('%d.%m.%Y')
-                list_dates.append(end_date)
-                return [[f"Начало отпуска - {list_dates[0]}. Конец отпуска - {list_dates[1]}", None]]
-
-    def get_dates_in_question(self, history, generator, mode):
-        if mode == MODES[2]:
-            partial_text = ""
-            for token in generator:
-                for data in token["choices"]:
-                    letters = data["delta"].get("content", "")
-                    partial_text += letters
-                    f_logger.finfo(letters)
-                    history[-1][1] = partial_text
-            return self.calculate_end_date(history)
-
     def get_message_generator(self, history, retrieved_docs, mode, top_k, top_p, temp, uid):
         model = self.llama_model
         last_user_message = history[-1][0]
@@ -222,14 +196,6 @@ class LocalChatGPT:
         if retrieved_docs and mode == MODES[1]:
             last_user_message = f"Контекст: {retrieved_docs}\n\nИспользуя только контекст, ответь на вопрос: " \
                                 f"{last_user_message}"
-        elif mode == MODES[2]:
-            last_user_message = f"{last_user_message}\n\n" \
-                                f"Сегодня {datetime.now().strftime('%d.%m.%Y')} число. " \
-                                f"Если в контексте не указан год, то пиши {date.today().year}. " \
-                                f"Напиши ответ только так, без каких либо дополнений: " \
-                                f"Прошу предоставить ежегодный оплачиваемый отпуск с " \
-                                f"(дата начала отпуска в формате DD.MM.YYYY) по " \
-                                f"(дата окончания отпуска в формате DD.MM.YYYY)."
         logger.info(f"Вопрос был полностью сформирован [uid - {uid}]")
         f_logger.finfo(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] - Вопрос: {history[-1][0]} - "
                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n")
@@ -256,7 +222,7 @@ class LocalChatGPT:
         return model, generator, files
 
     @staticmethod
-    def get_list_files(history, mode, scores, files, partial_text):
+    def get_list_files(history, scores, files, partial_text):
         if files:
             partial_text += SOURCES_SEPARATOR
             sources_text = [
@@ -268,11 +234,6 @@ class LocalChatGPT:
                 partial_text += "\n\n\n".join(sources_text)
             elif scores:
                 partial_text += sources_text[0]
-            history[-1][1] = partial_text
-        elif mode == MODES[2]:
-            file = create_doc(partial_text, "Титова", "Сергея Сергеевича", "Руководитель отдела",
-                              "Отдел организационного развития")
-            partial_text += f'\n\n\nФайл: {file}'
             history[-1][1] = partial_text
         return history
 
@@ -296,14 +257,10 @@ class LocalChatGPT:
             yield history[:-1]
             self.semaphore.release()
             return
-        model, generator, files = self.get_message_generator(history, retrieved_docs, mode, top_k, top_p, temp, uid)
         partial_text = ""
         logger.info(f"Начинается генерация ответа [uid - {uid}]")
         f_logger.finfo(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] - Ответ: ")
-        if message := self.get_dates_in_question(history, generator, mode):
-            model, generator, files = self.get_message_generator(message, retrieved_docs, mode, top_k, top_p, temp, uid)
-        elif mode == MODES[2]:
-            model, generator, files = self.get_message_generator(history, retrieved_docs, mode, top_k, top_p, temp, uid)
+        model, generator, files = self.get_message_generator(history, retrieved_docs, mode, top_k, top_p, temp, uid)
         try:
             token: dict
             for token in generator:
@@ -321,7 +278,7 @@ class LocalChatGPT:
             yield history
         f_logger.finfo(f" - [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n\n")
         logger.info(f"Генерация ответа закончена [uid - {uid}]")
-        yield self.get_list_files(history, mode, scores, files, partial_text)
+        yield self.get_list_files(history, scores, files, partial_text)
         self._queue -= 1
         self.semaphore.release()
 
@@ -680,7 +637,7 @@ class LocalChatGPT:
                 with gr.Row():
                     with gr.Column():
                         analytics = gr.DataFrame(
-                            value=self.get_analytics,
+                            value=self.get_analytics,  # type: ignore
                             interactive=False,
                             wrap=True
                         )

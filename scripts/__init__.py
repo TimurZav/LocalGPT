@@ -22,7 +22,7 @@ QUERY_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважите�
 
 LLM_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважительный и честный ассистент."
 
-MODES: list = ["ВНД", "Свободное общение", "Получение документов"]
+MODES: list = ["ВНД", "Свободное общение"]
 CONTEXT_SIZE = 4000
 SYSTEM_TOKEN: int = 1788
 USER_TOKEN: int = 1404
@@ -63,6 +63,7 @@ MAX_NEW_TOKENS: int = 1500
 
 ABS_PATH = os.path.dirname(os.path.abspath(__file__))
 DB_DIR = os.path.join(ABS_PATH, "../chroma")
+DATABASE_URL = f"sqlite:///{DB_DIR}/users_data.db"
 MODELS_DIR = os.path.join(ABS_PATH, "../models")
 LOGGING_DIR: str = os.path.join(ABS_PATH, "../logging")
 if not os.path.exists(LOGGING_DIR):

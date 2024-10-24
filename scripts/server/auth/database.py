@@ -1,12 +1,11 @@
 import os
-from scripts.__init__ import DB_DIR
 from sqlalchemy import create_engine
 from sqlalchemy import Column, String
 from sqlalchemy.orm import sessionmaker
 from passlib.context import CryptContext
+from scripts.__init__ import DB_DIR, DATABASE_URL
 from sqlalchemy.ext.declarative import declarative_base
 
-DATABASE_URL = f"sqlite:///{DB_DIR}/users.db"
 os.makedirs(DB_DIR, exist_ok=True)
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
