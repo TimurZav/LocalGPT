@@ -1,0 +1,12 @@
+models
+upload_files
+flagged
+clickhouse
+chroma
+data_questions
+logging
+.ipynb_checkpoints
+.idea
+vscode
+__pycache__
+scripts/__pycache__

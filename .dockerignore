@@ -1,0 +1,11 @@
+.git
+node_modules
+__pycache__
+clickhouse
+chroma
+venv
+models
+texts
+load_texts
+texts_update
+.ipynb_checkpoints
