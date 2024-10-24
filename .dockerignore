@@ -2,9 +2,9 @@
 node_modules
 __pycache__
 clickhouse
-chroma
+data/chroma
 venv
-models
+data/models
 texts
 load_texts
 texts_update

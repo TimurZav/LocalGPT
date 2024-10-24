@@ -4,7 +4,6 @@ import os.path
 import chromadb
 import requests
 import tempfile
-import threading
 import pandas as pd
 import gradio as gr
 from re import Pattern
@@ -27,19 +26,16 @@ f_logger = FileLogger(__name__, f"{LOGGING_DIR}/answers_bot.log", mode='a', leve
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-class LocalChatGPT:
-
+class LocalGPT:
     def __init__(self):
-        self.llama_model: Optional[Llama] = self.initialize_app()
+        self.llm: Optional[Llama] = self.initialize_app()
         self.embeddings = HuggingFaceEmbeddings(model_name=EMBEDDER_NAME, cache_folder=MODELS_DIR)
-        self.db: Optional[Chroma] = None
         self.collection: str = "all-documents"
-        self.load_db()
+        self.db: Optional[Chroma] = None
         self.mode: str = MODES[0]
         self.system_prompt = self._get_default_system_prompt(self.mode)
-        self.semaphore = threading.Semaphore()
         self._queue = 0
-        self.tiny_db = TinyDB(f'{DATA_QUESTIONS}/tiny_db.json', indent=4, ensure_ascii=False)
+        self.tiny_db = TinyDB(f'{QUESTIONS}/tiny_db.json', indent=4, ensure_ascii=False)
 
     @staticmethod
     def initialize_app() -> Llama:
@@ -56,7 +52,7 @@ class LocalChatGPT:
                 http_get(REPO, f)
 
         return Llama(
-            n_gpu_layers=43,
+            n_gpu_layers=-1,
             model_path=final_model_path,
             n_ctx=CONTEXT_SIZE,
             n_parts=1,
@@ -187,7 +183,6 @@ class LocalChatGPT:
             return gr.update(placeholder=self.system_prompt, interactive=False)
 
     def get_message_generator(self, history, retrieved_docs, mode, top_k, top_p, temp, uid):
-        model = self.llama_model
         last_user_message = history[-1][0]
         pattern = r'<a\s+[^>]*>(.*?)</a>'
         files = re.findall(pattern, retrieved_docs)
@@ -203,7 +198,7 @@ class LocalChatGPT:
             {"role": "user", "content": user_message}
             for user_message, _ in history[-4:-1]
         ]
-        generator = model.create_chat_completion(
+        generator = self.llm.create_chat_completion(
             messages=[
                 {
                     "role": "system", "content": self.system_prompt
@@ -219,7 +214,7 @@ class LocalChatGPT:
             top_k=top_k,
             top_p=top_p
         )
-        return model, generator, files
+        return generator, files
 
     @staticmethod
     def get_list_files(history, scores, files, partial_text):
@@ -252,15 +247,13 @@ class LocalChatGPT:
         """
         logger.info(f"Подготовка к генерации ответа. Формирование полного вопроса на основе контекста и истории "
                     f"[uid - {uid}]")
-        self.semaphore.acquire()
         if not history or not history[-1][0]:
             yield history[:-1]
-            self.semaphore.release()
             return
         partial_text = ""
         logger.info(f"Начинается генерация ответа [uid - {uid}]")
         f_logger.finfo(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] - Ответ: ")
-        model, generator, files = self.get_message_generator(history, retrieved_docs, mode, top_k, top_p, temp, uid)
+        generator, files = self.get_message_generator(history, retrieved_docs, mode, top_k, top_p, temp, uid)
         try:
             token: dict
             for token in generator:
@@ -280,17 +273,14 @@ class LocalChatGPT:
         logger.info(f"Генерация ответа закончена [uid - {uid}]")
         yield self.get_list_files(history, scores, files, partial_text)
         self._queue -= 1
-        self.semaphore.release()
 
     def user(self, message, history):
         uid = uuid.uuid4()
         logger.info(f"Обработка вопроса. Очередь - {self._queue}. UID - [{uid}]")
-        self.semaphore.acquire()
         if history is None:
             history = []
         new_history = history + [[message, None]]
         self._queue += 1
-        self.semaphore.release()
         logger.info(f"Закончена обработка вопроса. UID - [{uid}]")
         return "", new_history, uid
 
@@ -326,25 +316,23 @@ class LocalChatGPT:
         return "\n\n\n".join(list_data), scores
 
     def ingest_files(self):
-        self.load_db()
+        self.db = self.load_db()
         files = {
             os.path.basename(ingested_document["source"])
             for ingested_document in self.db.get()["metadatas"]
         }
-        return list(files)
+        return gr.update(choices=list(files))
 
-    def delete_doc(self, documents: str):
-        self.load_db()
+    def delete_doc(self, documents: list):
         all_documents: dict = self.db.get()
         for_delete_ids: list = []
-        list_documents: List[str] = documents.strip().split("\n")
         for ingested_document, doc_id in zip(all_documents["metadatas"], all_documents["ids"]):
             print(ingested_document)
-            if os.path.basename(ingested_document["source"]) in list_documents:
+            if os.path.basename(ingested_document["source"]) in documents:
                 for_delete_ids.append(doc_id)
         if for_delete_ids:
             self.db.delete(for_delete_ids)
-        return gr.update(choices=self.ingest_files())
+        return self.ingest_files()
 
     def get_analytics(self) -> pd.DataFrame:
         try:
@@ -385,7 +373,7 @@ class LocalChatGPT:
         :return:
         """
         response = requests.post(
-            "http://0.0.0.0:8001/token",
+            f"http://{IP_ADDRESS}/token",
             data={"username": username, "password": password},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -394,8 +382,7 @@ class LocalChatGPT:
         logger.error(response.json()["detail"])
         return {"access_token": None, "is_success": False, "message": response.json()["detail"]}
 
-    @staticmethod
-    def get_current_user_info(local_data):
+    def get_current_user_info(self, local_data):
         """
 
         :param local_data:
@@ -403,7 +390,7 @@ class LocalChatGPT:
         """
         if isinstance(local_data, dict) and local_data.get("is_success", False):
             response = requests.get(
-                "http://0.0.0.0:8001/users/me",
+                f"http://{IP_ADDRESS}/users/me",
                 headers={"Authorization": f"Bearer {local_data['access_token']}"}
             )
             logger.info(f"User is {response.json().get('username')}")
@@ -413,13 +400,15 @@ class LocalChatGPT:
 
         obj_tabs = [local_data] + [gr.update(visible=is_logged_in) for _ in range(3)]
         if is_logged_in:
-            obj_tabs.append(gr.update(value="Выйти", icon=str(LOGOUT_ICON)))
+            obj_tabs.append(gr.update(value="Выйти", icon=LOGOUT_ICON))
         else:
-            obj_tabs.append(gr.update(value="Войти", icon=str(LOGIN_ICON)))
+            obj_tabs.append(gr.update(value="Войти", icon=LOGIN_ICON))
         obj_tabs.append(gr.update(visible=not is_logged_in))
         if isinstance(local_data, dict):
             obj_tabs.append(local_data.get("message", MESSAGE_LOGIN))
-
+        else:
+            obj_tabs.append(MESSAGE_LOGIN)
+        obj_tabs.append(self.ingest_files())
         return obj_tabs
 
     def login_or_logout(self, local_data, login_btn):
@@ -432,7 +421,7 @@ class LocalChatGPT:
         data = self.get_current_user_info(local_data)
         if isinstance(data[0], dict) and data[0].get("access_token"):
             obj_tabs = [gr.update(visible=False)] + [gr.update(visible=False) for _ in range(3)]
-            obj_tabs.append(gr.update(value="Войти", icon=str(LOGIN_ICON)))
+            obj_tabs.append(gr.update(value="Войти", icon=LOGIN_ICON))
             return obj_tabs
         obj_tabs = [gr.update(visible=True)] + [gr.update(visible=False) for _ in range(3)]
         obj_tabs.append(login_btn)
@@ -444,7 +433,7 @@ class LocalChatGPT:
         :return:
         """
         client = chromadb.PersistentClient(path=DB_DIR)
-        self.db = Chroma(
+        return Chroma(
             client=client,
             collection_name=self.collection,
             embedding_function=self.embeddings,
@@ -456,7 +445,7 @@ class LocalChatGPT:
         :return:
         """
         with gr.Blocks(
-                title="MakarGPT",
+                title="LocalGPT",
                 theme=gr.themes.Soft().set(
                     body_background_fill="white",
                     block_background_fill="#e1e5e8",
@@ -476,12 +465,13 @@ class LocalChatGPT:
         ) as demo:
             # Ваш логотип и текст заголовка
             logo_svg = f'<img src="{FAVICON_PATH}" width="48px" style="display: inline">'
-            header_html = f"""<h1><center>{logo_svg} Виртуальный ассистент Рускон (бета-версия)</center></h1>"""
+            header_html = f"""<h1><center>{logo_svg} Виртуальный ассистент</center></h1>"""
 
             with gr.Row():
                 gr.HTML(header_html)
-                login_btn = gr.DuplicateButton("Войти", variant="primary", size="lg", elem_id="login_btn",
-                                               icon=str(LOGIN_ICON))
+                login_btn = gr.DuplicateButton(
+                    "Войти", variant="primary", size="lg", elem_id="login_btn", icon=LOGOUT_ICON
+                )
 
             uid = gr.State(None)
             scores = gr.State(None)
@@ -541,9 +531,9 @@ class LocalChatGPT:
                         file_warning = gr.Markdown("Фрагменты ещё не загружены!")
 
                     with gr.Column(scale=7):
-                        list_files = self.ingest_files()
+                        # list_files = self.ingest_files()
                         files_selected = gr.Dropdown(
-                            choices=list_files,
+                            choices=None,
                             label="Выберите файлы для удаления",
                             value=None,
                             multiselect=True
@@ -787,7 +777,16 @@ class LocalChatGPT:
             demo.load(
                 fn=self.get_current_user_info,
                 inputs=[local_data],
-                outputs=[local_data, documents_tab, settings_tab, logging_tab, login_btn],
+                outputs=[
+                    local_data,
+                    documents_tab,
+                    settings_tab,
+                    logging_tab,
+                    login_btn,
+                    modal,
+                    message_login,
+                    files_selected
+                ],
                 js=LOCAL_STORAGE
             )
 

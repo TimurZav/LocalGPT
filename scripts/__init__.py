@@ -1,4 +1,5 @@
 import os
+import socket
 import logging
 from langchain_community.document_loaders import (
     CSVLoader,
@@ -24,16 +25,6 @@ LLM_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважител�
 
 MODES: list = ["ВНД", "Свободное общение"]
 CONTEXT_SIZE = 4000
-SYSTEM_TOKEN: int = 1788
-USER_TOKEN: int = 1404
-BOT_TOKEN: int = 9225
-LINEBREAK_TOKEN: int = 13
-
-ROLE_TOKENS: dict = {
-    "user": USER_TOKEN,
-    "bot": BOT_TOKEN,
-    "system": SYSTEM_TOKEN
-}
 
 LOADER_MAPPING: dict = {
     ".csv": (CSVLoader, {}),
@@ -50,45 +41,46 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-MODEL: str = "saiga2_7b_gguf"
-MODEL_Q: str = "model-q2_K.gguf"
-
-REPO: str = f"https://huggingface.co/IlyaGusev/{MODEL}/resolve/main/{MODEL_Q}"
-MODEL_NAME = f"{MODEL}/{MODEL_Q}"
-
-
+REPO_ID: str = "meetkai/functionary-small-v3.2-GGUF"
+MODEL: str = "functionary-small-v3.2.Q8_0.gguf"
+REPO: str = f"https://huggingface.co/{REPO_ID}/resolve/main/{MODEL}"
+MODEL_NAME: str = f"{REPO_ID}/{MODEL}"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
-
 MAX_NEW_TOKENS: int = 1500
 
-ABS_PATH = os.path.dirname(os.path.abspath(__file__))
-DB_DIR = os.path.join(ABS_PATH, "../chroma")
-DATABASE_URL = f"sqlite:///{DB_DIR}/users_data.db"
-MODELS_DIR = os.path.join(ABS_PATH, "../models")
-LOGGING_DIR: str = os.path.join(ABS_PATH, "../logging")
+IP_ADDRESS = f"{socket.gethostbyname(socket.gethostname())}:{8001}"
+
+ABS_PATH: str = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR: str = "../data"
+if not os.path.exists(DATA_DIR):
+    os.mkdir(DATA_DIR)
+DB_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/chroma")
+DATABASE_URL: str = f"sqlite:///{DB_DIR}/users_data.db"
+MODELS_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/models")
+LOGGING_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/logging")
 if not os.path.exists(LOGGING_DIR):
     os.mkdir(LOGGING_DIR)
-DATA_QUESTIONS = os.path.join(ABS_PATH, "../data_questions")
-if not os.path.exists(DATA_QUESTIONS):
-    os.mkdir(DATA_QUESTIONS)
+QUESTIONS: str = os.path.join(ABS_PATH, f"{DATA_DIR}/questions")
+if not os.path.exists(QUESTIONS):
+    os.mkdir(QUESTIONS)
 
-IMAGES = os.path.join(ABS_PATH, "static/img")
+IMAGES: str = os.path.join(ABS_PATH, "static/img")
 if not os.path.exists(IMAGES):
     os.mkdir(IMAGES)
-AVATAR_USER = f"{IMAGES}/icons8-человек-96.png"
-AVATAR_BOT = f"{IMAGES}/icons8-bot-96.png"
-LOGIN_ICON = f"{IMAGES}/login.png"
-LOGOUT_ICON = f"{IMAGES}/logout.png"
+AVATAR_USER: str = f"{IMAGES}/icons8-человек-96.png"
+AVATAR_BOT: str = f"{IMAGES}/icons8-bot-96.png"
+LOGIN_ICON: str = f"{IMAGES}/login.png"
+LOGOUT_ICON: str = f"{IMAGES}/logout.png"
 
 SOURCES_SEPARATOR = "\n\n Документы: \n"
 MESSAGE_LOGIN = "Введите логин и пароль, чтобы войти"
 
-FILES_DIR = os.path.join(ABS_PATH, "../upload_files")
+FILES_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/upload_files")
 os.makedirs(FILES_DIR, exist_ok=True)
 os.chmod(FILES_DIR, 0o0777)
 os.environ['GRADIO_TEMP_DIR'] = FILES_DIR
 
-BLOCK_CSS = """
+BLOCK_CSS: str = """
 
 #buttons button {
     min-width: min(120px,100%);
@@ -132,7 +124,7 @@ tr span {
 """
 
 
-JS = """
+JS: str = """
 function disable_btn() {
     var elements = document.getElementsByClassName('wrap default minimal svelte-1occ011 translucent');
 
@@ -149,7 +141,7 @@ function disable_btn() {
 """
 
 
-LOCAL_STORAGE = """
+LOCAL_STORAGE: str = """
 function() {
     globalThis.setStorage = (key, value) => {
         localStorage.setItem(key, JSON.stringify(value))
@@ -170,7 +162,7 @@ LOG_FORMAT: str = "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d
 DATE_FTM: str = "%d/%B/%Y %H:%M:%S"
 
 
-def get_stream_handler():
+def get_stream_handler() -> logging.StreamHandler:
     stream_handler: logging.StreamHandler = logging.StreamHandler()
     stream_handler.setLevel(logging.INFO)
     stream_handler.setFormatter(logging.Formatter(LOG_FORMAT))

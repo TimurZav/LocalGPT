@@ -1,10 +1,6 @@
-models
-upload_files
+data/
 flagged
 clickhouse
-chroma
-data_questions
-logging
 .ipynb_checkpoints
 .idea
 vscode

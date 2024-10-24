@@ -4,10 +4,6 @@ services:
     container_name: chatbot
     build: .
     restart: always
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
     volumes:
       - ./models:/models  # Монтируйте папку с моделями внутрь контейнера
       - ./chroma:/chroma
@@ -15,6 +11,10 @@ services:
       - ./scripts:/app
     ports:
       - "8001:8001"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     deploy:
       resources:
         reservations:
