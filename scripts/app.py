@@ -512,7 +512,7 @@ class LocalGPT:
         except KeyError:
             return pd.DataFrame(self.tiny_db.all())
 
-    def update_message_analytics(self, messages: List[List], analyse=None):
+    def _update_message_analytics(self, messages: List[List], analyse=None):
         """
         Updates or inserts analytics data for the latest message in the database.
 
@@ -615,7 +615,7 @@ class LocalGPT:
         obj_tabs.append(self._list_ingested_documents())
         return obj_tabs
 
-    def toggle_login_state(self, local_data: Optional[dict], login_btn: gr.component):
+    def _toggle_login_state(self, local_data: Optional[dict], login_btn: gr.component):
         """
         Handles user login/logout functionality and updates the UI accordingly.
 
@@ -891,7 +891,7 @@ class LocalGPT:
             )
 
             login_btn.click(
-                fn=self.toggle_login_state,
+                fn=self._toggle_login_state,
                 inputs=[local_data, login_btn],
                 outputs=[modal, documents_tab, settings_tab, logging_tab, login_btn]
             ).success(
@@ -947,7 +947,7 @@ class LocalGPT:
                 outputs=chatbot,
                 queue=True
             ).success(
-                fn=self.update_message_analytics,
+                fn=self._update_message_analytics,
                 inputs=chatbot,
                 outputs=analytics,
                 queue=True,
@@ -970,7 +970,7 @@ class LocalGPT:
                 outputs=chatbot,
                 queue=True
             ).success(
-                fn=self.update_message_analytics,
+                fn=self._update_message_analytics,
                 inputs=chatbot,
                 outputs=analytics,
                 queue=True,
@@ -978,7 +978,7 @@ class LocalGPT:
 
             # Like
             like.click(
-                fn=self.update_message_analytics,
+                fn=self._update_message_analytics,
                 inputs=[chatbot, like],
                 outputs=[analytics],
                 queue=True,
@@ -986,7 +986,7 @@ class LocalGPT:
 
             # Dislike
             dislike.click(
-                fn=self.update_message_analytics,
+                fn=self._update_message_analytics,
                 inputs=[chatbot, dislike],
                 outputs=[analytics],
                 queue=True,
