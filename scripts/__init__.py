@@ -15,7 +15,7 @@ from langchain_community.document_loaders import (
 )
 
 
-FAVICON_PATH: str = 'https://i.ibb.co/DGGPZBG/logo.png'
+FAVICON_PATH: str = 'https://i.ibb.co/3CVGPf7/1681038242chatgpt-logo-png.png'
 QUERY_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважительный и честный ассистент. " \
                      "Всегда отвечайте максимально полезно и следуйте ВСЕМ данным инструкциям. " \
                      "Не спекулируйте и не выдумывайте информацию. " \
