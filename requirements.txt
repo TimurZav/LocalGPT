@@ -8,7 +8,7 @@ unstructured==0.6.10
 gradio==4.19.0
 tabulate==0.9.0
 sentence-transformers==2.2.2
-pandas==1.5.3
+pandas==2.2.3
 celery==5.2.7
 tzdata==2023.4
 redis==5.0.1
@@ -20,4 +20,6 @@ uvicorn==0.24.0.post1
 passlib==1.7.4
 python-jose==3.3.0
 gradio-modal==0.0.3
-requests==2.31.0
+requests==2.32.3
+SQLAlchemy==2.0.36
+pydantic==2.9.2

@@ -216,6 +216,7 @@ class LocalGPT:
         logger.info(f"Response generation completed [uid - {uid}]")
         yield self._add_source_references(history, scores, files, partial_text)
         self._queue -= 1
+        _ = self.analytics_manager.update_message_analytics(history)
 
     def add_user_message(self, message: str, history: Optional[List]):
         """
@@ -301,7 +302,7 @@ class LocalGPT:
                 with gr.Row():
                     with gr.Column(scale=10):
                         chatbot = gr.Chatbot(
-                            label="Диалог",
+                            label=f"LLM: {self.llm.metadata['general.name']}",
                             height=500,
                             show_copy_button=True,
                             show_share_button=True,
@@ -320,11 +321,12 @@ class LocalGPT:
                             container=False
                         )
                     with gr.Column(scale=3, min_width=100):
-                        submit = gr.Button("📤 Отправить", variant="primary")
+                        start_btn = gr.Button("📤 Отправить", variant="primary")
 
                 with gr.Row(elem_id="buttons"):
                     like = gr.Button(value="👍 Понравилось")
                     dislike = gr.Button(value="👎 Не понравилось")
+                    stop_btn = gr.Button(value="🛑 Остановить")
                     clear = gr.Button(value="🗑️ Очистить")
 
                 with gr.Row():
@@ -518,7 +520,7 @@ class LocalGPT:
             )
 
             # Pressing Enter
-            msg.submit(
+            click_msg_event = msg.submit(
                 fn=self.add_user_message,
                 inputs=[msg, chatbot],
                 outputs=[msg, chatbot, uid],
@@ -533,15 +535,10 @@ class LocalGPT:
                 inputs=[chatbot, collection_radio, retrieved_docs, top_p, top_k, temp, scores, uid],
                 outputs=chatbot,
                 queue=True
-            ).success(
-                fn=self.analytics_manager.update_message_analytics,
-                inputs=chatbot,
-                outputs=analytics,
-                queue=True,
             )
 
             # Pressing the button
-            submit.click(
+            click_btn_event = start_btn.click(
                 fn=self.add_user_message,
                 inputs=[msg, chatbot],
                 outputs=[msg, chatbot, uid],
@@ -556,11 +553,6 @@ class LocalGPT:
                 inputs=[chatbot, collection_radio, retrieved_docs, top_p, top_k, temp, scores, uid],
                 outputs=chatbot,
                 queue=True
-            ).success(
-                fn=self.analytics_manager.update_message_analytics,
-                inputs=chatbot,
-                outputs=analytics,
-                queue=True,
             )
 
             # Like
@@ -586,6 +578,14 @@ class LocalGPT:
                 outputs=chatbot,
                 queue=False,
                 js=JS
+            )
+
+            # Stop generation
+            stop_btn.click(
+                fn=None,
+                inputs=None,
+                outputs=None,
+                cancels=[click_msg_event, click_btn_event]
             )
 
             demo.load(
@@ -788,7 +788,7 @@ class DocumentManager:
         :return: A tuple with a formatted string of retrieved documents and a list of their similarity scores.
         """
         if not self.db or collection_radio != MODES[0] or not history or not history[-1][0]:
-            return "Documents will appear after questions are asked", []
+            return "Появятся после задавания вопросов", []
 
         last_user_message = history[-1][0]
         docs = self.db.similarity_search_with_score(last_user_message, k_documents)

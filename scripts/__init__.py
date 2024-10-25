@@ -48,7 +48,7 @@ MODEL_NAME: str = f"{REPO_ID}/{MODEL}"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 
-IP_ADDRESS = f"{socket.gethostbyname(socket.gethostname())}:{8001}"
+IP_ADDRESS = f"{socket.gethostbyname(socket.gethostname())}:8001"
 
 ABS_PATH: str = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR: str = "../data"
