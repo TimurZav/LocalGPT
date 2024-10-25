@@ -25,6 +25,440 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger: logging.getLogger = get_logger(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
 
 
+class SystemPromptManager:
+    def __init__(self):
+        self.mode = MODES[0]
+        self.system_prompt = ""
+
+    def set_system_prompt(self, system_prompt_input: str) -> None:
+        """
+        Setting prompt.
+        :param system_prompt_input: Prompt.
+        :return:
+        """
+        self.system_prompt = system_prompt_input
+
+    def set_current_mode(self, mode: str) -> gr.update:
+        """
+        Setting prompt.
+        :param mode: Mode.
+        :return:
+        """
+        self.mode = mode
+        self.set_system_prompt(self._get_default_system_prompt(mode))
+        # Update placeholder and allow interaction if default system prompt is set
+        if self.system_prompt:
+            return gr.update(placeholder=self.system_prompt, interactive=True)
+        # Update placeholder and disable interaction if no default system prompt is set
+        else:
+            return gr.update(placeholder=self.system_prompt, interactive=False)
+
+    @staticmethod
+    def _get_default_system_prompt(mode: str) -> str:
+        """
+        Returning prompt of mode.
+        :param mode: Mode.
+        :return: Prompt.
+        """
+        return QUERY_SYSTEM_PROMPT if mode == "DB" else LLM_SYSTEM_PROMPT
+
+
+class AnalyticsManager:
+    def __init__(self):
+        self.tiny_db: TinyDB = TinyDB(f'{QUESTIONS}/tiny_db.json', indent=4, ensure_ascii=False)
+
+    def get_analytics(self) -> pd.DataFrame:
+        """
+        Retrieves and returns analytics data from the database as a sorted DataFrame.
+
+        This method fetches all data entries from the `tiny_db` database, converts them into a DataFrame,
+        and sorts the records by the 'Старт обработки запроса' (Request Processing Start) column in
+        descending order if this column is present. If the column is missing, it returns the DataFrame unsorted.
+
+        :return: A DataFrame containing analytics data, optionally sorted by 'Старт обработки запроса'
+        in descending order.
+        """
+        try:
+            return pd.DataFrame(self.tiny_db.all()).sort_values('Старт обработки запроса', ascending=False)
+        except KeyError:
+            return pd.DataFrame(self.tiny_db.all())
+
+    def update_message_analytics(self, messages: List[List], analyse=None):
+        """
+        Updates or inserts analytics data for the latest message in the database.
+
+        This function processes the last message in a list of message-answer pairs (`messages`). If the message
+        already exists in the database, it updates the stored answer, increments the repetition count, and
+        optionally adds a rating (`analyse`). If the message is new, it inserts a new record with the current
+        timestamp. Finally, it returns the updated analytics DataFrame.
+
+        :param messages: List of tuples where each tuple is a (message, answer) pair.
+        :param analyse: Optional; rating to assign to the message-answer pair. If not provided, defaults to None.
+        :return: A DataFrame containing the latest analytics data.
+        """
+        message = messages[-1][0] if messages else None
+        answer = messages[-1][1] if message else None
+        filter_query = where('Сообщения') == message
+        if result := self.tiny_db.search(filter_query):
+            if analyse is None:
+                self.tiny_db.update({
+                    'Ответы': answer,
+                    'Количество повторений': result[0]['Количество повторений'] + 1,
+                    'Старт обработки запроса': str(datetime.now())
+                }, cond=filter_query)
+            else:
+                self.tiny_db.update({'Оценка ответа': analyse}, cond=filter_query)
+                gr.Info("Отзыв ответу поставлен")
+        elif message is not None:
+            self.tiny_db.insert({
+                'Сообщения': message,
+                'Ответы': answer,
+                'Количество повторений': 1,
+                'Оценка ответа': None,
+                'Старт обработки запроса': str(datetime.now())
+            })
+        return self.get_analytics()
+
+
+class AuthManager:
+    def __init__(self, document_manager):
+        self.document_manager: DocumentManager = document_manager
+
+    @staticmethod
+    def login(username: str, password: str) -> dict:
+        """
+        Sends a login request to obtain an access token for the provided user credentials.
+
+        This function takes in a username and password, then sends a POST request to the
+        authentication endpoint to retrieve an access token. If authentication is successful,
+        the access token is returned along with a success flag. In case of failure, an error
+        message is logged, and the function returns failure information with an error message.
+
+        :param username: The username of the user attempting to authenticate.
+        :param password: The password of the user attempting to authenticate.
+        :return: A dictionary containing:
+                 - "access_token": The access token if authentication is successful, else None.
+                 - "is_success": Boolean indicating success (True) or failure (False).
+                 - "message": Error message if authentication fails, else not included.
+        """
+        try:
+            response = requests.post(
+                f"http://{IP_ADDRESS}/token",
+                data={"username": username, "password": password},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=10  # Adding a timeout
+            )
+            if response.status_code == 200:
+                return {"access_token": response.json().get("access_token"), "is_success": True}
+            error_detail = response.json().get("detail", "Unknown error")
+            logger.error(f"Login failed with status {response.status_code}: {error_detail}")
+            return {"access_token": None, "is_success": False, "message": error_detail}
+        except requests.RequestException as e:
+            logger.error(f"Error during login request: {e}")
+            return {"access_token": None, "is_success": False, "message": "Request failed"}
+
+    def update_user_ui_state(self, local_data: Optional[dict]):
+        """
+        Retrieves current user information and updates the user interface based on login status.
+
+        Validates the `local_data` to check if the user is authenticated. If authenticated, retrieves
+        user details from the server and prepares the UI to reflect the logged-in state. In case of failed
+        authentication or a logged-out state, it updates the UI to reflect this accordingly.
+
+        :param local_data: A dictionary with local user data, including an access token and login status.
+        :return: A list of UI updates for interface components based on user login status.
+        """
+        if isinstance(local_data, dict) and local_data.get("is_success", False):
+            response = requests.get(
+                f"http://{IP_ADDRESS}/users/me",
+                headers={"Authorization": f"Bearer {local_data['access_token']}"}
+            )
+            logger.info(f"User is {response.json().get('username')}")
+            is_logged_in = response.status_code == 200
+        else:
+            is_logged_in = False
+
+        obj_tabs = [local_data] + [gr.update(visible=is_logged_in) for _ in range(3)]
+        if is_logged_in:
+            obj_tabs.append(gr.update(value="Выйти", icon=LOGOUT_ICON))
+        else:
+            obj_tabs.append(gr.update(value="Войти", icon=LOGIN_ICON))
+        obj_tabs.append(gr.update(visible=not is_logged_in))
+        if isinstance(local_data, dict):
+            obj_tabs.append(local_data.get("message", MESSAGE_LOGIN))
+        else:
+            obj_tabs.append(MESSAGE_LOGIN)
+        obj_tabs.append(self.document_manager.list_ingested_documents())
+        return obj_tabs
+
+    def toggle_login_state(self, local_data: Optional[dict], login_btn: gr.component):
+        """
+        Handles user login/logout functionality and updates the UI accordingly.
+
+        This function checks the current user's login status using `local_data`. If the user is logged in,
+        it updates the UI to reflect a logged-out state, changing the button to "Login." If the user
+        is not logged in, it shows the login button and adjusts the visibility of other UI components.
+
+        :param local_data: A dictionary containing local user data, which may include an access token.
+        :param login_btn: The Gradio component representing the login button.
+        :return: A list of UI updates to be applied based on the user's login state.
+        """
+        data = self.update_user_ui_state(local_data)
+        is_logged_in = isinstance(data[0], dict) and data[0].get("access_token")
+
+        obj_tabs = [gr.update(visible=not is_logged_in)] + [gr.update(visible=False) for _ in range(3)]
+        obj_tabs.append(gr.update(value="Войти" if is_logged_in else login_btn))
+
+        return obj_tabs
+
+
+class DocumentManager:
+    def __init__(self):
+        self.embeddings: HuggingFaceEmbeddings = HuggingFaceEmbeddings(
+            model_name=EMBEDDER_NAME,
+            cache_folder=MODELS_DIR
+        )
+        self.collection: str = "all-documents"
+        self.db: Optional[Chroma] = None
+
+    def initialize_database(self) -> Chroma:
+        """
+        Loads the database connection using a persistent Chroma client.
+
+        This method initializes a PersistentClient for Chroma, specifying the
+        path to the database directory. It then creates and returns a Chroma
+        instance that can be used to interact with the specified collection
+        using the defined embedding function.
+
+        :return: An instance of Chroma connected to the specified collection.
+        """
+        client = chromadb.PersistentClient(path=DB_DIR)
+        return Chroma(
+            client=client,
+            collection_name=self.collection,
+            embedding_function=self.embeddings,
+        )
+
+    @staticmethod
+    def load_document_from_file(file_path: str) -> Document:
+        """
+        Loads a single document from the specified file path.
+
+        This method checks the file extension to ensure it is supported. If the
+        extension is valid, it initializes the appropriate loader class and
+        loads the document.
+
+        :param file_path: The path to the document file to be loaded.
+        :return: An instance of the loaded Document.
+        :raises FileNotFoundError: If the specified file cannot be found or loaded.
+        :raises ValueError: If the file extension is not supported by the loader.
+        """
+        ext: str = os.path.splitext(file_path)[1]
+        if ext not in LOADER_MAPPING:
+            raise ValueError(f"Unsupported file extension: {ext}")
+
+        try:
+            loader_class, loader_args = LOADER_MAPPING[ext]
+            loader = loader_class(file_path, **loader_args)
+            return loader.load()[0]
+        except Exception as e:
+            logger.error(f"Error loading document {file_path}: {e}")
+            raise FileNotFoundError(f"Failed to load document at {file_path}") from e
+
+    @staticmethod
+    def _process_text(text: str) -> str:
+        """
+        Processes the input text by removing unnecessary lines and formatting it into a more readable form.
+
+        This method filters out lines that are too short or empty, then joins
+        the remaining lines into a single string. If the resulting text is shorter
+        than 10 characters, an empty string is returned.
+
+        :param text: The input string containing the text to be processed.
+        :return: A cleaned and formatted version of the input text. Returns an
+                 empty string if the processed text is less than 10 characters long.
+        """
+        lines: list = text.split("\n")
+        lines = [line for line in lines if len(line.strip()) > 2]
+        text = "\n".join(lines).strip()
+        return "" if len(text) < 10 else text
+
+    def update_documents(self, fixed_documents: List[Document], ids: List[str]) -> tuple[bool, str]:
+        """
+        Updates existing documents in the database if their filenames match the uploaded documents.
+
+        This method checks for duplicate filenames between the uploaded documents and
+        the existing documents in the database. If duplicates are found, the existing
+        documents will be deleted before the new documents are added.
+
+        :param fixed_documents: A list of Document objects to be uploaded.
+        :param ids: A list of identifiers corresponding to the documents being uploaded.
+        :return: A tuple containing a boolean indicating whether the update was successful,
+                 and a message providing feedback on the operation.
+        """
+        data: dict = self.db.get()
+        files_db = {os.path.basename(dict_data['source']) for dict_data in data["metadatas"]}
+        files_load = {os.path.basename(dict_data.metadata["source"]) for dict_data in fixed_documents}
+        if same_files := files_load & files_db:
+            gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
+            for file in same_files:
+                pattern: Pattern[str] = re.compile(fr'{file.replace(".txt", "")}\d*$')
+                self.db.delete([x for x in data['ids'] if pattern.match(x)])
+            self.db = self.db.from_documents(
+                documents=fixed_documents,
+                embedding=self.embeddings,
+                ids=ids,
+                persist_directory=DB_DIR,
+                collection_name=self.collection,
+            )
+            file_warning = f"Загружено {len(fixed_documents)} фрагментов! Можно задавать вопросы."
+            return True, file_warning
+        return False, "Фрагменты ещё не загружены!"
+
+    def _filter_valid_documents(self, documents: List[Document]) -> List[Document]:
+        """
+        Filters out documents with insufficient content after processing.
+        :param documents: Upload documents.
+        :return: Valid documents.
+        """
+        valid_documents: list = []
+        for doc in documents:
+            doc.page_content = self._process_text(doc.page_content)
+            if doc.page_content:  # Only append if there's valid content
+                valid_documents.append(doc)
+        return valid_documents
+
+    def index_documents(
+        self,
+        file_paths: List[tempfile.TemporaryFile],
+        chunk_size: int,
+        chunk_overlap: int
+    ):
+        """
+        Build an index from the provided document file paths by loading, processing,
+        and splitting the documents into manageable chunks.
+
+        :param file_paths: A list of temporary file paths from which to load documents.
+        :param chunk_size: The maximum size of each chunk of text after splitting.
+        :param chunk_overlap: The number of overlapping characters between chunks to maintain context.
+        :return: A warning message indicating the number of fragments loaded and readiness for queries,
+                 or any warnings encountered during the update process.
+        """
+        load_documents: List[Document] = [self.load_document_from_file(path.name) for path in file_paths]
+        text_splitter: RecursiveCharacterTextSplitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
+        documents = text_splitter.split_documents(load_documents)
+        fixed_documents = self._filter_valid_documents(documents)
+
+        ids: List[str] = [
+            f"{os.path.basename(doc.metadata['source']).replace('.txt', '')}{i}"
+            for i, doc in enumerate(fixed_documents)
+        ]
+        is_updated, file_warning = self.update_documents(fixed_documents, ids)
+        if is_updated:
+            return file_warning
+        self.db = self.db.from_documents(
+            documents=fixed_documents,
+            embedding=self.embeddings,
+            ids=ids,
+            persist_directory=DB_DIR,
+            collection_name=self.collection,
+        )
+        file_warning = f"Загружено {len(fixed_documents)} фрагментов! Можно задавать вопросы."
+        os.chmod(FILES_DIR, 0o0777)
+        return file_warning
+
+    def retrieve_documents(
+        self,
+        history: List[List[Optional[str]]],
+        collection_radio: str,
+        k_documents: int,
+        uid: str
+    ) -> Tuple[str, list]:
+        """
+        Retrieves relevant documents from the database based on the user's most recent message
+        and formats them for display, including document URLs and similarity scores.
+
+        This function performs a similarity search on the user's latest message within a specific
+        database collection, and returns a formatted string containing the retrieved documents
+        along with their similarity scores. If there are no relevant documents or conditions are
+        not met, an appropriate message and an empty list are returned.
+
+        :param history: The conversation history as a list of message pairs (user, bot responses).
+        :param collection_radio: The selected collection mode for document retrieval.
+        :param k_documents: The number of top documents to retrieve based on similarity.
+        :param uid: The unique identifier for the current session, used for logging.
+        :return: A tuple with a formatted string of retrieved documents and a list of their similarity scores.
+        """
+        if not self.db or collection_radio != MODES[0] or not history or not history[-1][0]:
+            return "Появятся после задавания вопросов", []
+
+        last_user_message = history[-1][0]
+        docs = self.db.similarity_search_with_score(last_user_message, k_documents)
+        scores: list = []
+        data = defaultdict(str)
+
+        for doc in docs:
+            url = (
+                f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
+                rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
+            )
+            document: str = f"Document - {url} ↓"
+            score: float = round(doc[1], 2)
+            scores.append(score)
+            data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
+
+        list_data: list = [f"{doc}\n\n{text}" for doc, text in data.items()]
+        logger.info(f"Retrieved context from database for collection '{collection_radio}' [uid - {uid}]")
+
+        if not list_data:
+            return "No documents found in the database", scores
+
+        return "\n\n\n".join(list_data), scores
+
+    def list_ingested_documents(self):
+        """
+        Loads the database and retrieves a list of ingested document filenames.
+
+        This method initializes or reloads the database connection, retrieves document metadata,
+        and compiles a list of the filenames of previously ingested documents, returning them
+        in a format suitable for UI updates.
+
+        :return: An update object for UI elements with the current list of ingested document filenames.
+        """
+        self.db = self.initialize_database()
+        files = {
+            os.path.basename(ingested_document["source"])
+            for ingested_document in self.db.get()["metadatas"]
+        }
+        return gr.update(choices=list(files))
+
+    def delete_documents(self, documents: list):
+        """
+        Deletes specified documents from the database.
+
+        This method takes a list of document filenames to delete, searches the database for matching
+        document entries, and deletes those that match. It then returns an updated list of the
+        remaining ingested document filenames.
+
+        :param documents: List of document filenames (without paths) to delete from the database.
+        :return: An update object for the UI element containing the list of remaining ingested documents.
+        """
+        try:
+            all_documents: dict = self.db.get()
+            if for_delete_ids := [
+                doc_id
+                for ingested_document, doc_id in zip(all_documents["metadatas"], all_documents["ids"])
+                if os.path.basename(ingested_document["source"]) in documents
+            ]:
+                self.db.delete(for_delete_ids)
+            return self.list_ingested_documents()
+        except Exception as e:
+            logger.error(f"Error during document deletion: {e}")
+            return gr.update(choices=[])
+
+
 class LocalGPT:
     def __init__(self):
         self.llm: Optional[Llama] = self.load_or_initialize_model()
@@ -606,437 +1040,3 @@ class LocalGPT:
 
         demo.queue(max_size=128, api_open=False)
         return demo
-
-
-class DocumentManager:
-    def __init__(self):
-        self.embeddings: HuggingFaceEmbeddings = HuggingFaceEmbeddings(
-            model_name=EMBEDDER_NAME,
-            cache_folder=MODELS_DIR
-        )
-        self.collection: str = "all-documents"
-        self.db: Optional[Chroma] = None
-
-    def initialize_database(self) -> Chroma:
-        """
-        Loads the database connection using a persistent Chroma client.
-
-        This method initializes a PersistentClient for Chroma, specifying the
-        path to the database directory. It then creates and returns a Chroma
-        instance that can be used to interact with the specified collection
-        using the defined embedding function.
-
-        :return: An instance of Chroma connected to the specified collection.
-        """
-        client = chromadb.PersistentClient(path=DB_DIR)
-        return Chroma(
-            client=client,
-            collection_name=self.collection,
-            embedding_function=self.embeddings,
-        )
-
-    @staticmethod
-    def load_document_from_file(file_path: str) -> Document:
-        """
-        Loads a single document from the specified file path.
-
-        This method checks the file extension to ensure it is supported. If the
-        extension is valid, it initializes the appropriate loader class and
-        loads the document.
-
-        :param file_path: The path to the document file to be loaded.
-        :return: An instance of the loaded Document.
-        :raises FileNotFoundError: If the specified file cannot be found or loaded.
-        :raises ValueError: If the file extension is not supported by the loader.
-        """
-        ext: str = os.path.splitext(file_path)[1]
-        if ext not in LOADER_MAPPING:
-            raise ValueError(f"Unsupported file extension: {ext}")
-
-        try:
-            loader_class, loader_args = LOADER_MAPPING[ext]
-            loader = loader_class(file_path, **loader_args)
-            return loader.load()[0]
-        except Exception as e:
-            logger.error(f"Error loading document {file_path}: {e}")
-            raise FileNotFoundError(f"Failed to load document at {file_path}") from e
-
-    @staticmethod
-    def _process_text(text: str) -> str:
-        """
-        Processes the input text by removing unnecessary lines and formatting it into a more readable form.
-
-        This method filters out lines that are too short or empty, then joins
-        the remaining lines into a single string. If the resulting text is shorter
-        than 10 characters, an empty string is returned.
-
-        :param text: The input string containing the text to be processed.
-        :return: A cleaned and formatted version of the input text. Returns an
-                 empty string if the processed text is less than 10 characters long.
-        """
-        lines: list = text.split("\n")
-        lines = [line for line in lines if len(line.strip()) > 2]
-        text = "\n".join(lines).strip()
-        return "" if len(text) < 10 else text
-
-    def update_documents(self, fixed_documents: List[Document], ids: List[str]) -> tuple[bool, str]:
-        """
-        Updates existing documents in the database if their filenames match the uploaded documents.
-
-        This method checks for duplicate filenames between the uploaded documents and
-        the existing documents in the database. If duplicates are found, the existing
-        documents will be deleted before the new documents are added.
-
-        :param fixed_documents: A list of Document objects to be uploaded.
-        :param ids: A list of identifiers corresponding to the documents being uploaded.
-        :return: A tuple containing a boolean indicating whether the update was successful,
-                 and a message providing feedback on the operation.
-        """
-        data: dict = self.db.get()
-        files_db = {os.path.basename(dict_data['source']) for dict_data in data["metadatas"]}
-        files_load = {os.path.basename(dict_data.metadata["source"]) for dict_data in fixed_documents}
-        if same_files := files_load & files_db:
-            gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
-            for file in same_files:
-                pattern: Pattern[str] = re.compile(fr'{file.replace(".txt", "")}\d*$')
-                self.db.delete([x for x in data['ids'] if pattern.match(x)])
-            self.db = self.db.from_documents(
-                documents=fixed_documents,
-                embedding=self.embeddings,
-                ids=ids,
-                persist_directory=DB_DIR,
-                collection_name=self.collection,
-            )
-            file_warning = f"Загружено {len(fixed_documents)} фрагментов! Можно задавать вопросы."
-            return True, file_warning
-        return False, "Фрагменты ещё не загружены!"
-
-    def _filter_valid_documents(self, documents: List[Document]) -> List[Document]:
-        """
-        Filters out documents with insufficient content after processing.
-        :param documents: Upload documents.
-        :return: Valid documents.
-        """
-        valid_documents: list = []
-        for doc in documents:
-            doc.page_content = self._process_text(doc.page_content)
-            if doc.page_content:  # Only append if there's valid content
-                valid_documents.append(doc)
-        return valid_documents
-
-    def index_documents(
-        self,
-        file_paths: List[tempfile.TemporaryFile],
-        chunk_size: int,
-        chunk_overlap: int
-    ):
-        """
-        Build an index from the provided document file paths by loading, processing,
-        and splitting the documents into manageable chunks.
-
-        :param file_paths: A list of temporary file paths from which to load documents.
-        :param chunk_size: The maximum size of each chunk of text after splitting.
-        :param chunk_overlap: The number of overlapping characters between chunks to maintain context.
-        :return: A warning message indicating the number of fragments loaded and readiness for queries,
-                 or any warnings encountered during the update process.
-        """
-        load_documents: List[Document] = [self.load_document_from_file(path.name) for path in file_paths]
-        text_splitter: RecursiveCharacterTextSplitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size, chunk_overlap=chunk_overlap
-        )
-        documents = text_splitter.split_documents(load_documents)
-        fixed_documents = self._filter_valid_documents(documents)
-
-        ids: List[str] = [
-            f"{os.path.basename(doc.metadata['source']).replace('.txt', '')}{i}"
-            for i, doc in enumerate(fixed_documents)
-        ]
-        is_updated, file_warning = self.update_documents(fixed_documents, ids)
-        if is_updated:
-            return file_warning
-        self.db = self.db.from_documents(
-            documents=fixed_documents,
-            embedding=self.embeddings,
-            ids=ids,
-            persist_directory=DB_DIR,
-            collection_name=self.collection,
-        )
-        file_warning = f"Загружено {len(fixed_documents)} фрагментов! Можно задавать вопросы."
-        os.chmod(FILES_DIR, 0o0777)
-        return file_warning
-
-    def retrieve_documents(
-        self,
-        history: List[List[Optional[str]]],
-        collection_radio: str,
-        k_documents: int,
-        uid: str
-    ) -> Tuple[str, list]:
-        """
-        Retrieves relevant documents from the database based on the user's most recent message
-        and formats them for display, including document URLs and similarity scores.
-
-        This function performs a similarity search on the user's latest message within a specific
-        database collection, and returns a formatted string containing the retrieved documents
-        along with their similarity scores. If there are no relevant documents or conditions are
-        not met, an appropriate message and an empty list are returned.
-
-        :param history: The conversation history as a list of message pairs (user, bot responses).
-        :param collection_radio: The selected collection mode for document retrieval.
-        :param k_documents: The number of top documents to retrieve based on similarity.
-        :param uid: The unique identifier for the current session, used for logging.
-        :return: A tuple with a formatted string of retrieved documents and a list of their similarity scores.
-        """
-        if not self.db or collection_radio != MODES[0] or not history or not history[-1][0]:
-            return "Появятся после задавания вопросов", []
-
-        last_user_message = history[-1][0]
-        docs = self.db.similarity_search_with_score(last_user_message, k_documents)
-        scores: list = []
-        data = defaultdict(str)
-
-        for doc in docs:
-            url = (
-                f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
-                rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
-            )
-            document: str = f"Document - {url} ↓"
-            score: float = round(doc[1], 2)
-            scores.append(score)
-            data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
-
-        list_data: list = [f"{doc}\n\n{text}" for doc, text in data.items()]
-        logger.info(f"Retrieved context from database for collection '{collection_radio}' [uid - {uid}]")
-
-        if not list_data:
-            return "No documents found in the database", scores
-
-        return "\n\n\n".join(list_data), scores
-
-    def list_ingested_documents(self):
-        """
-        Loads the database and retrieves a list of ingested document filenames.
-
-        This method initializes or reloads the database connection, retrieves document metadata,
-        and compiles a list of the filenames of previously ingested documents, returning them
-        in a format suitable for UI updates.
-
-        :return: An update object for UI elements with the current list of ingested document filenames.
-        """
-        self.db = self.initialize_database()
-        files = {
-            os.path.basename(ingested_document["source"])
-            for ingested_document in self.db.get()["metadatas"]
-        }
-        return gr.update(choices=list(files))
-
-    def delete_documents(self, documents: list):
-        """
-        Deletes specified documents from the database.
-
-        This method takes a list of document filenames to delete, searches the database for matching
-        document entries, and deletes those that match. It then returns an updated list of the
-        remaining ingested document filenames.
-
-        :param documents: List of document filenames (without paths) to delete from the database.
-        :return: An update object for the UI element containing the list of remaining ingested documents.
-        """
-        try:
-            all_documents: dict = self.db.get()
-            if for_delete_ids := [
-                doc_id
-                for ingested_document, doc_id in zip(all_documents["metadatas"], all_documents["ids"])
-                if os.path.basename(ingested_document["source"]) in documents
-            ]:
-                self.db.delete(for_delete_ids)
-            return self.list_ingested_documents()
-        except Exception as e:
-            logger.error(f"Error during document deletion: {e}")
-            return gr.update(choices=[])
-
-
-class AuthManager:
-    def __init__(self, document_manager):
-        self.document_manager: DocumentManager = document_manager
-
-    @staticmethod
-    def login(username: str, password: str) -> dict:
-        """
-        Sends a login request to obtain an access token for the provided user credentials.
-
-        This function takes in a username and password, then sends a POST request to the
-        authentication endpoint to retrieve an access token. If authentication is successful,
-        the access token is returned along with a success flag. In case of failure, an error
-        message is logged, and the function returns failure information with an error message.
-
-        :param username: The username of the user attempting to authenticate.
-        :param password: The password of the user attempting to authenticate.
-        :return: A dictionary containing:
-                 - "access_token": The access token if authentication is successful, else None.
-                 - "is_success": Boolean indicating success (True) or failure (False).
-                 - "message": Error message if authentication fails, else not included.
-        """
-        try:
-            response = requests.post(
-                f"http://{IP_ADDRESS}/token",
-                data={"username": username, "password": password},
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=10  # Adding a timeout
-            )
-            if response.status_code == 200:
-                return {"access_token": response.json().get("access_token"), "is_success": True}
-            error_detail = response.json().get("detail", "Unknown error")
-            logger.error(f"Login failed with status {response.status_code}: {error_detail}")
-            return {"access_token": None, "is_success": False, "message": error_detail}
-        except requests.RequestException as e:
-            logger.error(f"Error during login request: {e}")
-            return {"access_token": None, "is_success": False, "message": "Request failed"}
-
-    def update_user_ui_state(self, local_data: Optional[dict]):
-        """
-        Retrieves current user information and updates the user interface based on login status.
-
-        Validates the `local_data` to check if the user is authenticated. If authenticated, retrieves
-        user details from the server and prepares the UI to reflect the logged-in state. In case of failed
-        authentication or a logged-out state, it updates the UI to reflect this accordingly.
-
-        :param local_data: A dictionary with local user data, including an access token and login status.
-        :return: A list of UI updates for interface components based on user login status.
-        """
-        if isinstance(local_data, dict) and local_data.get("is_success", False):
-            response = requests.get(
-                f"http://{IP_ADDRESS}/users/me",
-                headers={"Authorization": f"Bearer {local_data['access_token']}"}
-            )
-            logger.info(f"User is {response.json().get('username')}")
-            is_logged_in = response.status_code == 200
-        else:
-            is_logged_in = False
-
-        obj_tabs = [local_data] + [gr.update(visible=is_logged_in) for _ in range(3)]
-        if is_logged_in:
-            obj_tabs.append(gr.update(value="Выйти", icon=LOGOUT_ICON))
-        else:
-            obj_tabs.append(gr.update(value="Войти", icon=LOGIN_ICON))
-        obj_tabs.append(gr.update(visible=not is_logged_in))
-        if isinstance(local_data, dict):
-            obj_tabs.append(local_data.get("message", MESSAGE_LOGIN))
-        else:
-            obj_tabs.append(MESSAGE_LOGIN)
-        obj_tabs.append(self.document_manager.list_ingested_documents())
-        return obj_tabs
-
-    def toggle_login_state(self, local_data: Optional[dict], login_btn: gr.component):
-        """
-        Handles user login/logout functionality and updates the UI accordingly.
-
-        This function checks the current user's login status using `local_data`. If the user is logged in,
-        it updates the UI to reflect a logged-out state, changing the button to "Login." If the user
-        is not logged in, it shows the login button and adjusts the visibility of other UI components.
-
-        :param local_data: A dictionary containing local user data, which may include an access token.
-        :param login_btn: The Gradio component representing the login button.
-        :return: A list of UI updates to be applied based on the user's login state.
-        """
-        data = self.update_user_ui_state(local_data)
-        is_logged_in = isinstance(data[0], dict) and data[0].get("access_token")
-
-        obj_tabs = [gr.update(visible=not is_logged_in)] + [gr.update(visible=False) for _ in range(3)]
-        obj_tabs.append(gr.update(value="Войти" if is_logged_in else login_btn))
-
-        return obj_tabs
-
-
-class AnalyticsManager:
-    def __init__(self):
-        self.tiny_db: TinyDB = TinyDB(f'{QUESTIONS}/tiny_db.json', indent=4, ensure_ascii=False)
-
-    def get_analytics(self) -> pd.DataFrame:
-        """
-        Retrieves and returns analytics data from the database as a sorted DataFrame.
-
-        This method fetches all data entries from the `tiny_db` database, converts them into a DataFrame,
-        and sorts the records by the 'Старт обработки запроса' (Request Processing Start) column in
-        descending order if this column is present. If the column is missing, it returns the DataFrame unsorted.
-
-        :return: A DataFrame containing analytics data, optionally sorted by 'Старт обработки запроса'
-        in descending order.
-        """
-        try:
-            return pd.DataFrame(self.tiny_db.all()).sort_values('Старт обработки запроса', ascending=False)
-        except KeyError:
-            return pd.DataFrame(self.tiny_db.all())
-
-    def update_message_analytics(self, messages: List[List], analyse=None):
-        """
-        Updates or inserts analytics data for the latest message in the database.
-
-        This function processes the last message in a list of message-answer pairs (`messages`). If the message
-        already exists in the database, it updates the stored answer, increments the repetition count, and
-        optionally adds a rating (`analyse`). If the message is new, it inserts a new record with the current
-        timestamp. Finally, it returns the updated analytics DataFrame.
-
-        :param messages: List of tuples where each tuple is a (message, answer) pair.
-        :param analyse: Optional; rating to assign to the message-answer pair. If not provided, defaults to None.
-        :return: A DataFrame containing the latest analytics data.
-        """
-        message = messages[-1][0] if messages else None
-        answer = messages[-1][1] if message else None
-        filter_query = where('Сообщения') == message
-        if result := self.tiny_db.search(filter_query):
-            if analyse is None:
-                self.tiny_db.update({
-                    'Ответы': answer,
-                    'Количество повторений': result[0]['Количество повторений'] + 1,
-                    'Старт обработки запроса': str(datetime.now())
-                }, cond=filter_query)
-            else:
-                self.tiny_db.update({'Оценка ответа': analyse}, cond=filter_query)
-                gr.Info("Отзыв ответу поставлен")
-        elif message is not None:
-            self.tiny_db.insert({
-                'Сообщения': message,
-                'Ответы': answer,
-                'Количество повторений': 1,
-                'Оценка ответа': None,
-                'Старт обработки запроса': str(datetime.now())
-            })
-        return self.get_analytics()
-
-
-class SystemPromptManager:
-    def __init__(self):
-        self.mode = MODES[0]
-        self.system_prompt = ""
-
-    def set_system_prompt(self, system_prompt_input: str) -> None:
-        """
-        Setting prompt.
-        :param system_prompt_input: Prompt.
-        :return:
-        """
-        self.system_prompt = system_prompt_input
-
-    def set_current_mode(self, mode: str) -> gr.update:
-        """
-        Setting prompt.
-        :param mode: Mode.
-        :return:
-        """
-        self.mode = mode
-        self.set_system_prompt(self._get_default_system_prompt(mode))
-        # Update placeholder and allow interaction if default system prompt is set
-        if self.system_prompt:
-            return gr.update(placeholder=self.system_prompt, interactive=True)
-        # Update placeholder and disable interaction if no default system prompt is set
-        else:
-            return gr.update(placeholder=self.system_prompt, interactive=False)
-
-    @staticmethod
-    def _get_default_system_prompt(mode: str) -> str:
-        """
-        Returning prompt of mode.
-        :param mode: Mode.
-        :return: Prompt.
-        """
-        return QUERY_SYSTEM_PROMPT if mode == "DB" else LLM_SYSTEM_PROMPT
