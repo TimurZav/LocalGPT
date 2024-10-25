@@ -907,7 +907,9 @@ class LocalGPT:
             )
 
             collection_radio.change(
-                fn=self._set_current_mode, inputs=collection_radio, outputs=system_prompt
+                fn=self._set_current_mode,
+                inputs=collection_radio,
+                outputs=system_prompt
             )
 
             # Upload files
@@ -917,7 +919,7 @@ class LocalGPT:
                 outputs=[file_warning],
                 queue=True
             ).success(
-                self._list_ingested_documents,
+                fn=self._list_ingested_documents,
                 outputs=files_selected
             )
 
@@ -991,7 +993,13 @@ class LocalGPT:
             )
 
             # Clear history
-            clear.click(lambda: None, None, chatbot, queue=False, js=JS)
+            clear.click(
+                fn=lambda: None,
+                inputs=None,
+                outputs=chatbot,
+                queue=False,
+                js=JS
+            )
 
             demo.load(
                 fn=self.update_user_ui_state,
