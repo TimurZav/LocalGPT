@@ -671,23 +671,23 @@ class LocalGPT:
             gr.Blocks: The Gradio Blocks instance for the LocalGPT application UI.
         """
         with gr.Blocks(
-                title="LocalGPT",
-                theme=gr.themes.Soft().set(
-                    body_background_fill="white",
-                    block_background_fill="#e1e5e8",
-                    block_label_background_fill="#2042b9",
-                    block_label_background_fill_dark="#2042b9",
-                    block_label_text_color="white",
-                    checkbox_label_background_fill_selected="#1f419b",
-                    checkbox_label_background_fill_selected_dark="#1f419b",
-                    checkbox_background_color_selected="#111d3d",
-                    checkbox_background_color_selected_dark="#111d3d",
-                    input_background_fill="#e1e5e8",
-                    button_primary_background_fill="#1f419b",
-                    button_primary_background_fill_dark="#1f419b",
-                    shadow_drop_lg="5px 5px 5px 5px rgb(0 0 0 / 0.1)"
-                ),
-                css=BLOCK_CSS
+            title="LocalGPT",
+            theme=gr.themes.Soft().set(
+                body_background_fill="white",
+                block_background_fill="#e1e5e8",
+                block_label_background_fill="#2042b9",
+                block_label_background_fill_dark="#2042b9",
+                block_label_text_color="white",
+                checkbox_label_background_fill_selected="#1f419b",
+                checkbox_label_background_fill_selected_dark="#1f419b",
+                checkbox_background_color_selected="#111d3d",
+                checkbox_background_color_selected_dark="#111d3d",
+                input_background_fill="#e1e5e8",
+                button_primary_background_fill="#1f419b",
+                button_primary_background_fill_dark="#1f419b",
+                shadow_drop_lg="5px 5px 5px 5px rgb(0 0 0 / 0.1)"
+            ),
+            css=BLOCK_CSS
         ) as demo:
             # Ваш логотип и текст заголовка
             logo_svg = f'<img src="{FAVICON_PATH}" width="48px" style="display: inline">'
