@@ -93,7 +93,7 @@ class LocalGPT:
             raise FileNotFoundError(f"Failed to load document at {file_path}") from e
 
     @staticmethod
-    def process_text(text: str) -> str:
+    def _process_text(text: str) -> str:
         """
         Processes the input text by removing unnecessary lines and formatting it into a more readable form.
 
@@ -142,7 +142,7 @@ class LocalGPT:
             return True, file_warning
         return False, "Фрагменты ещё не загружены!"
 
-    def filter_valid_documents(self, documents: List[Document]) -> List[Document]:
+    def _filter_valid_documents(self, documents: List[Document]) -> List[Document]:
         """
         Filters out documents with insufficient content after processing.
         :param documents: Upload documents.
@@ -150,7 +150,7 @@ class LocalGPT:
         """
         valid_documents: list = []
         for doc in documents:
-            doc.page_content = self.process_text(doc.page_content)
+            doc.page_content = self._process_text(doc.page_content)
             if doc.page_content:  # Only append if there's valid content
                 valid_documents.append(doc)
         return valid_documents
@@ -176,7 +176,7 @@ class LocalGPT:
             chunk_size=chunk_size, chunk_overlap=chunk_overlap
         )
         documents = text_splitter.split_documents(load_documents)
-        fixed_documents = self.filter_valid_documents(documents)
+        fixed_documents = self._filter_valid_documents(documents)
 
         ids: List[str] = [
             f"{os.path.basename(doc.metadata['source']).replace('.txt', '')}{i}"
@@ -287,7 +287,7 @@ class LocalGPT:
         return generator, files
 
     @staticmethod
-    def add_source_references(
+    def _add_source_references(
         history: List[List[str]],
         scores: List[float],
         files: List[str],
@@ -381,7 +381,7 @@ class LocalGPT:
             yield history
 
         logger.info(f"Response generation completed [uid - {uid}]")
-        yield self.add_source_references(history, scores, files, partial_text)
+        yield self._add_source_references(history, scores, files, partial_text)
         self._queue -= 1
 
     def add_user_message(self, message: str, history: Optional[List]):
@@ -455,7 +455,7 @@ class LocalGPT:
 
         return "\n\n\n".join(list_data), scores
 
-    def list_ingested_documents(self):
+    def _list_ingested_documents(self):
         """
         Loads the database and retrieves a list of ingested document filenames.
 
@@ -491,7 +491,7 @@ class LocalGPT:
                 if os.path.basename(ingested_document["source"]) in documents
             ]:
                 self.db.delete(for_delete_ids)
-            return self.list_ingested_documents()
+            return self._list_ingested_documents()
         except Exception as e:
             logger.error(f"Error during document deletion: {e}")
             return gr.update(choices=[])
@@ -549,7 +549,7 @@ class LocalGPT:
         return self.get_analytics()
 
     @staticmethod
-    def login(username, password):
+    def login(username: str, password: str) -> dict:
         """
         Sends a login request to obtain an access token for the provided user credentials.
 
@@ -612,7 +612,7 @@ class LocalGPT:
             obj_tabs.append(local_data.get("message", MESSAGE_LOGIN))
         else:
             obj_tabs.append(MESSAGE_LOGIN)
-        obj_tabs.append(self.list_ingested_documents())
+        obj_tabs.append(self._list_ingested_documents())
         return obj_tabs
 
     def toggle_login_state(self, local_data: Optional[dict], login_btn: gr.component):
@@ -917,7 +917,7 @@ class LocalGPT:
                 outputs=[file_warning],
                 queue=True
             ).success(
-                self.list_ingested_documents,
+                self._list_ingested_documents,
                 outputs=files_selected
             )
 
