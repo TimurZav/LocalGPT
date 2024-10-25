@@ -121,11 +121,11 @@ class LocalGPT:
 
     @staticmethod
     def _add_source_references(
-            history: List[List[str]],
-            scores: List[float],
-            files: List[str],
-            partial_text: str,
-            threshold: float = 0.44
+        history: List[List[str]],
+        scores: List[float],
+        files: List[str],
+        partial_text: str,
+        threshold: float = 0.44
     ) -> List[List[str]]:
         """
         Appends file source references to the final response text based on score thresholds and
@@ -725,10 +725,10 @@ class DocumentManager:
         return valid_documents
 
     def index_documents(
-            self,
-            file_paths: List[tempfile.TemporaryFile],
-            chunk_size: int,
-            chunk_overlap: int
+        self,
+        file_paths: List[tempfile.TemporaryFile],
+        chunk_size: int,
+        chunk_overlap: int
     ):
         """
         Build an index from the provided document file paths by loading, processing,
@@ -766,11 +766,11 @@ class DocumentManager:
         return file_warning
 
     def retrieve_documents(
-            self,
-            history: List[List[Optional[str]]],
-            collection_radio: str,
-            k_documents: int,
-            uid: str
+        self,
+        history: List[List[Optional[str]]],
+        collection_radio: str,
+        k_documents: int,
+        uid: str
     ) -> Tuple[str, list]:
         """
         Retrieves relevant documents from the database based on the user's most recent message
