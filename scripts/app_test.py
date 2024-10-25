@@ -1,8 +1,8 @@
 import re
+import json
 import uuid
 import os.path
 import chromadb
-import requests
 import tempfile
 import pandas as pd
 import gradio as gr
@@ -12,6 +12,7 @@ from llama_cpp import Llama
 from datetime import datetime
 from gradio_modal import Modal
 from tinydb import TinyDB, where
+from functions.functions import *
 from collections import defaultdict
 from langchain.docstore.document import Document
 from typing import List, Optional, Tuple, Iterator
@@ -266,7 +267,7 @@ class DocumentManager:
             raise FileNotFoundError(f"Failed to load document at {file_path}") from e
 
     @staticmethod
-    def _process_text(text: str) -> str:
+    def _process_text(page_content: str) -> str:
         """
         Processes the input text by removing unnecessary lines and formatting it into a more readable form.
 
@@ -274,14 +275,14 @@ class DocumentManager:
         the remaining lines into a single string. If the resulting text is shorter
         than 10 characters, an empty string is returned.
 
-        :param text: The input string containing the text to be processed.
+        :param page_content: The input string containing the text to be processed.
         :return: A cleaned and formatted version of the input text. Returns an
                  empty string if the processed text is less than 10 characters long.
         """
-        lines: list = text.split("\n")
+        lines: list = page_content.split("\n")
         lines = [line for line in lines if len(line.strip()) > 2]
-        text = "\n".join(lines).strip()
-        return "" if len(text) < 10 else text
+        page_content = "\n".join(lines).strip()
+        return "" if len(page_content) < 10 else page_content
 
     def update_documents(self, fixed_documents: List[Document], ids: List[str]) -> tuple[bool, str]:
         """
@@ -409,7 +410,7 @@ class DocumentManager:
             scores.append(score)
             data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
 
-        list_data: list = [f"{doc}\n\n{text}" for doc, text in data.items()]
+        list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
         logger.info(f"Retrieved context from database for collection '{collection_radio}' [uid - {uid}]")
 
         if not list_data:
@@ -495,6 +496,61 @@ class LocalGPT:
             n_parts=1,
         )
 
+    def integrate_functions(
+        self,
+        messages: List[dict],
+        top_k: int,
+        top_p: float,
+        temp: float,
+        is_use_tools: bool
+    ):
+        """
+        Integrates function calls within a chat model by generating chat completions,
+        invoking available functions based on the model's output, and returning the updated
+        chat completion generator.
+
+        :param messages: A list of message dictionaries representing the conversation context.
+        :param top_k: The number of top tokens to sample from during generation.
+        :param top_p: The cumulative probability threshold for nucleus sampling.
+        :param temp: The temperature to control the randomness of the generated output.
+        :param is_use_tools: A boolean indicating whether to enable tool usage (auto) or not (none).
+
+        :return: A generator object containing the chat completion responses after function integration.
+        """
+        self.llm.chat_format = "chatml-function-calling"
+        generator = self.llm.create_chat_completion(
+            messages=messages,
+            temperature=temp,
+            top_k=top_k,
+            top_p=top_p,
+            tools=tools,
+            tool_choice={True: "auto", False: "none"}.get(is_use_tools)
+        )
+        available_functions = {
+            "get_current_weather": get_current_weather,
+            "calculate": calculate,
+            "generate_sql_query": generate_sql_query
+        }
+        for tool_call in generator["choices"][0]["message"].get("tool_calls", []):
+            function_name = tool_call["function"]["name"]
+            function_to_call = available_functions[function_name]
+            function_args = json.loads(tool_call["function"]["arguments"])
+            function_response = function_to_call(**function_args)
+            logger.info(function_response)
+            messages.append({
+                "role": "tool",
+                "content": function_response,
+                "tool_call_id": tool_call["id"],
+            })
+        self.llm.chat_format = "chat_template.default"
+        return self.llm.create_chat_completion(
+            messages=messages,
+            stream=True,
+            temperature=temp,
+            top_k=top_k,
+            top_p=top_p
+        )
+
     def generate_chat_completion(
         self,
         history: List[list],
@@ -503,6 +559,7 @@ class LocalGPT:
         top_k: int,
         top_p: float,
         temp: float,
+        is_use_tools: bool,
         uid: str
     ):
         """
@@ -520,6 +577,7 @@ class LocalGPT:
         :param top_p: A float representing the cumulative probability threshold for token sampling (nucleus sampling).
         :param temp: A float that controls the randomness of the output; higher values produce more
                      random responses.
+        :param is_use_tools: A boolean indicating whether to enable tool usage (auto) or not (none).
         :param uid: A unique identifier for the user, used for logging purposes.
         :return: A generator for the chat completion response and a list of files extracted from the
                  retrieved documents.
@@ -540,17 +598,12 @@ class LocalGPT:
                 {"role": "user", "content": user_msg},
                 {"role": "assistant", "content": bot_msg}
             ))
-        generator = self.llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": self.prompt_manager.system_prompt},
-                *dialog_history,
-                {"role": "user", "content": last_user_message},
-            ],
-            stream=True,
-            temperature=temp,
-            top_k=top_k,
-            top_p=top_p
-        )
+        messages = [
+            {"role": "system", "content": self.prompt_manager.system_prompt},
+            *dialog_history,
+            {"role": "user", "content": last_user_message},
+        ]
+        generator = self.integrate_functions(messages, top_k, top_p, temp, is_use_tools)
         return generator, files
 
     @staticmethod
@@ -586,15 +639,16 @@ class LocalGPT:
         return history
 
     def generate_response_stream(
-            self,
-            history: List[List[str]],
-            mode: str,
-            retrieved_docs: str,
-            top_p: float,
-            top_k: int,
-            temp: float,
-            scores: List[float],
-            uid: str
+        self,
+        history: List[List[str]],
+        mode: str,
+        retrieved_docs: str,
+        top_p: float,
+        top_k: int,
+        temp: float,
+        scores: List[float],
+        is_use_tools: bool,
+        uid: str
     ) -> Iterator[List[List[str]]]:
         """
         Generates a response based on user input, context, and retrieved documents.
@@ -612,6 +666,7 @@ class LocalGPT:
         :param top_k: Number of top probable tokens considered for generation.
         :param temp: Temperature for response generation, influencing creativity.
         :param scores: List of scores associated with retrieved documents for source filtering.
+        :param is_use_tools: A boolean indicating whether to enable tool usage (auto) or not (none).
         :param uid: Unique identifier for the current user session, useful for logging and tracking.
         :return: Yields updated conversation history after each token generated, and the final response with sources.
         """
@@ -630,6 +685,7 @@ class LocalGPT:
             top_k=top_k,
             top_p=top_p,
             temp=temp,
+            is_use_tools=is_use_tools,
             uid=uid
         )
 
@@ -727,11 +783,13 @@ class LocalGPT:
 
             with gr.Tab("Чат"):
                 with gr.Row():
-                    collection_radio = gr.Radio(
-                        choices=MODES,
-                        value=self.prompt_manager.mode,
-                        show_label=False
-                    )
+                    with gr.Column():
+                        collection_radio = gr.Radio(
+                            choices=MODES,
+                            value=self.prompt_manager.mode,
+                            show_label=False
+                        )
+                        is_use_tools = gr.Checkbox(label="Использовать функции")
 
                 with gr.Row():
                     with gr.Column(scale=10):
@@ -966,7 +1024,7 @@ class LocalGPT:
                 queue=True,
             ).success(
                 fn=self.generate_response_stream,
-                inputs=[chatbot, collection_radio, retrieved_docs, top_p, top_k, temp, scores, uid],
+                inputs=[chatbot, collection_radio, retrieved_docs, top_p, top_k, temp, scores, is_use_tools, uid],
                 outputs=chatbot,
                 queue=True
             )
@@ -984,7 +1042,7 @@ class LocalGPT:
                 queue=True,
             ).success(
                 fn=self.generate_response_stream,
-                inputs=[chatbot, collection_radio, retrieved_docs, top_p, top_k, temp, scores, uid],
+                inputs=[chatbot, collection_radio, retrieved_docs, top_p, top_k, temp, scores, is_use_tools, uid],
                 outputs=chatbot,
                 queue=True
             )
