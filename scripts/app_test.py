@@ -496,7 +496,7 @@ class LocalGPT:
             n_parts=1,
         )
 
-    def integrate_functions(
+    def _integrate_functions(
         self,
         messages: List[dict],
         top_k: int,
@@ -603,7 +603,7 @@ class LocalGPT:
             *dialog_history,
             {"role": "user", "content": last_user_message},
         ]
-        generator = self.integrate_functions(messages, top_k, top_p, temp, is_use_tools)
+        generator = self._integrate_functions(messages, top_k, top_p, temp, is_use_tools)
         return generator, files
 
     @staticmethod
