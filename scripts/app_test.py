@@ -18,7 +18,7 @@ from langchain.docstore.document import Document
 from typing import List, Optional, Tuple, Iterator
 from huggingface_hub.file_download import http_get
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 
@@ -563,7 +563,7 @@ class LocalGPT:
 
     def generate_chat_completion(
         self,
-        history: List[list],
+        history: List[dict],
         retrieved_docs: str,
         mode: str,
         top_k: int,
@@ -592,7 +592,8 @@ class LocalGPT:
         :return: A generator for the chat completion response and a list of files extracted from the
                  retrieved documents.
         """
-        last_user_message: str = history[-1][0]
+        last_user_message: str = history[-1].get("content")
+        image_url: str = history[-2].get("content")[0]
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
         for file in files:
             retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
@@ -611,7 +612,13 @@ class LocalGPT:
         messages = [
             {"role": "system", "content": self.prompt_manager.system_prompt},
             *dialog_history,
-            {"role": "user", "content": last_user_message},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": last_user_message}
+                ]
+            }
         ]
         generator = self._integrate_functions(messages, top_k, top_p, temp, is_use_tools)
         return generator, files
@@ -650,7 +657,7 @@ class LocalGPT:
 
     def generate_response_stream(
         self,
-        history: List[List[str]],
+        history: List[dict],
         mode: str,
         retrieved_docs: str,
         top_p: float,
@@ -681,7 +688,7 @@ class LocalGPT:
         :return: Yields updated conversation history after each token generated, and the final response with sources.
         """
         logger.info(f"Preparing to generate a response based on context and history [uid - {uid}]")
-        if not history or not history[-1][0]:
+        if not history or not history[-1].get("role"):
             yield history[:-1]
             return
 
@@ -718,7 +725,7 @@ class LocalGPT:
         self._queue -= 1
         _ = self.analytics_manager.update_message_analytics(history)
 
-    def add_user_message(self, message: str, history: Optional[List]):
+    def add_user_message(self, message: dict, history: Optional[List]):
         """
         Adds a new user message to the conversation history and generates a unique session identifier.
 
@@ -736,10 +743,12 @@ class LocalGPT:
         logger.info(f"Processing the question. Queue - {self._queue}. UID - [{uid}]")
         if history is None:
             history = []
-        new_history = history + [[message, None]]
+        history.append({"role": "user", "content": message["files"]})
+        history.append({"role": "user", "content": message["text"]})
+        # new_history = history + [[message, None]]
         self._queue += 1
         logger.info(f"The question has been processed. UID - [{uid}]")
-        return "", new_history, uid
+        return "", history, uid
 
     def launch_ui(self):
         """
@@ -760,21 +769,7 @@ class LocalGPT:
         """
         with gr.Blocks(
             title="LocalGPT",
-            theme=gr.themes.Soft().set(
-                body_background_fill="white",
-                block_background_fill="#e1e5e8",
-                block_label_background_fill="#2042b9",
-                block_label_background_fill_dark="#2042b9",
-                block_label_text_color="white",
-                checkbox_label_background_fill_selected="#1f419b",
-                checkbox_label_background_fill_selected_dark="#1f419b",
-                checkbox_background_color_selected="#111d3d",
-                checkbox_background_color_selected_dark="#111d3d",
-                input_background_fill="#e1e5e8",
-                button_primary_background_fill="#1f419b",
-                button_primary_background_fill_dark="#1f419b",
-                shadow_drop_lg="5px 5px 5px 5px rgb(0 0 0 / 0.1)"
-            ),
+            theme=gr.themes.ocean.Ocean(),
             css=BLOCK_CSS
         ) as demo:
             # Ваш логотип и текст заголовка
@@ -806,6 +801,7 @@ class LocalGPT:
                         chatbot = gr.Chatbot(
                             label=f"LLM: {self.llm.metadata['general.name']}",
                             height=500,
+                            type="messages",
                             show_copy_button=True,
                             show_share_button=True,
                             avatar_images=(
@@ -816,14 +812,11 @@ class LocalGPT:
 
                 with gr.Row():
                     with gr.Column(scale=20):
-                        msg = gr.Textbox(
+                        msg = gr.MultimodalTextbox(
                             label="Отправить сообщение",
-                            show_label=False,
                             placeholder="👉 Напишите запрос",
-                            container=False
+                            show_label=False
                         )
-                    with gr.Column(scale=3, min_width=100):
-                        start_btn = gr.Button("📤 Отправить", variant="primary")
 
                 with gr.Row(elem_id="buttons"):
                     like = gr.Button(value="👍 Понравилось")
@@ -1039,24 +1032,6 @@ class LocalGPT:
                 queue=True
             )
 
-            # Pressing the button
-            click_btn_event = start_btn.click(
-                fn=self.add_user_message,
-                inputs=[msg, chatbot],
-                outputs=[msg, chatbot, uid],
-                queue=False,
-            ).success(
-                fn=self.document_manager.retrieve_documents,
-                inputs=[chatbot, collection_radio, k_documents, uid],
-                outputs=[retrieved_docs, scores],
-                queue=True,
-            ).success(
-                fn=self.generate_response_stream,
-                inputs=[chatbot, collection_radio, retrieved_docs, top_p, top_k, temp, scores, is_use_tools, uid],
-                outputs=chatbot,
-                queue=True
-            )
-
             # Like
             like.click(
                 fn=self.analytics_manager.update_message_analytics,
@@ -1087,7 +1062,7 @@ class LocalGPT:
                 fn=None,
                 inputs=None,
                 outputs=None,
-                cancels=[click_msg_event, click_btn_event]
+                cancels=[click_msg_event]
             )
 
             demo.load(

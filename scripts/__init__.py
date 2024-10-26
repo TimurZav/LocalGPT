@@ -41,8 +41,8 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-REPO_ID: str = "meetkai/functionary-small-v3.2-GGUF"
-MODEL: str = "functionary-small-v3.2.Q8_0.gguf"
+REPO_ID: str = "MaziyarPanahi/Llama-3.2-3B-Instruct-GGUF"
+MODEL: str = "Llama-3.2-3B-Instruct.Q8_0.gguf"
 REPO: str = f"https://huggingface.co/{REPO_ID}/resolve/main/{MODEL}"
 MODEL_NAME: str = f"{REPO_ID}/{MODEL}"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
