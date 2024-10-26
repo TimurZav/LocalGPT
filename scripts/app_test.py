@@ -559,7 +559,7 @@ class LocalGPT:
             })
         self.llm.chat_format = "chat_template.default"
         return self.llm.create_chat_completion(
-            messages=[messages[0]] + messages[-2:],
+            messages=[messages[0]] + messages[-1:],
             stream=True,
             temperature=temp,
             top_k=top_k,
