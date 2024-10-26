@@ -372,7 +372,7 @@ class DocumentManager:
 
     def retrieve_documents(
         self,
-        history: List[List[Optional[str]]],
+        history: List[dict],
         collection_radio: str,
         k_documents: int,
         uid: str
@@ -392,7 +392,12 @@ class DocumentManager:
         :param uid: The unique identifier for the current session, used for logging.
         :return: A tuple with a formatted string of retrieved documents and a list of their similarity scores.
         """
-        if not self.db or collection_radio != MODES[0] or not history or not history[-1][0]:
+        if (
+            not self.db
+            or collection_radio != MODES[0]
+            or not history
+            or history[-1]["role"] != "user"
+        ):
             return "Появятся после задавания вопросов", []
 
         last_user_message = history[-1][0]
@@ -593,7 +598,7 @@ class LocalGPT:
                  retrieved documents.
         """
         last_user_message: str = history[-1].get("content")
-        image_url: str = history[-2].get("content")[0]
+        image_url: Optional[str] = None
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
         for file in files:
             retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
@@ -603,9 +608,32 @@ class LocalGPT:
                 f"{last_user_message}"
             )
         logger.info(f"The question has been fully formed [uid - {uid}]")
-        dialog_history: List[dict] = []
-        if len(history) > 2:
-            dialog_history.extend(iter(history))
+        
+        pair_count = 0  # Счетчик пар "user-assistant"
+        temp_history = []  # Временный список для обратного добавления диалогов
+        for message in reversed(history):
+            if message["role"] == "user" and pair_count == 0:
+                continue
+            if message["role"] == "user" and isinstance(message["content"], tuple):
+                image_url: str = history[-2].get("content")[0]
+                history_msg: str = temp_history[-1]["content"]
+                image_path: str = message["content"][0]
+                temp_history.pop(-1)
+                temp_history.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_path}},
+                        {"type": "text", "text": history_msg}
+                    ]
+                })
+            else:
+                temp_history.append(message)
+            if message["role"] == "assistant":
+                pair_count += 1
+            if pair_count == 3:
+                break
+        
+        dialog_history: List[dict] = list(reversed(temp_history))
         messages = [
             {"role": "system", "content": self.prompt_manager.system_prompt},
             *dialog_history,
@@ -740,7 +768,8 @@ class LocalGPT:
         logger.info(f"Processing the question. Queue - {self._queue}. UID - [{uid}]")
         if history is None:
             history = []
-        history.append({"role": "user", "content": message["files"]})
+        if message["files"]:
+            history.append({"role": "user", "content": message["files"]})
         history.append({"role": "user", "content": message["text"]})
         self._queue += 1
         logger.info(f"The question has been processed. UID - [{uid}]")
