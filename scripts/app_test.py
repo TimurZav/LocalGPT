@@ -868,7 +868,7 @@ class LocalGPT:
                         files_selected = gr.Dropdown(
                             choices=None,
                             label="Выберите файлы для удаления",
-                            value=None,
+                            value="",
                             multiselect=True
                         )
                         delete = gr.Button("🧹 Удалить", variant="primary")
