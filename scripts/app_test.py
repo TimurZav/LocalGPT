@@ -84,7 +84,7 @@ class AnalyticsManager:
         except KeyError:
             return pd.DataFrame(self.tiny_db.all())
 
-    def update_message_analytics(self, messages: List[List], analyse=None):
+    def update_message_analytics(self, messages: List[dict], analyse=None):
         """
         Updates or inserts analytics data for the latest message in the database.
 
@@ -97,8 +97,8 @@ class AnalyticsManager:
         :param analyse: Optional; rating to assign to the message-answer pair. If not provided, defaults to None.
         :return: A DataFrame containing the latest analytics data.
         """
-        message = messages[-1][0] if messages else None
-        answer = messages[-1][1] if message else None
+        message = messages[-2]["content"] if messages else None
+        answer = messages[-1]["content"] if message else None
         filter_query = where('Сообщения') == message
         if result := self.tiny_db.search(filter_query):
             if analyse is None:
@@ -604,11 +604,8 @@ class LocalGPT:
             )
         logger.info(f"The question has been fully formed [uid - {uid}]")
         dialog_history: List[dict] = []
-        for user_msg, bot_msg in history[-4:-1]:
-            dialog_history.extend((
-                {"role": "user", "content": user_msg},
-                {"role": "assistant", "content": bot_msg}
-            ))
+        if len(history) > 2:
+            dialog_history.extend(iter(history))
         messages = [
             {"role": "system", "content": self.prompt_manager.system_prompt},
             *dialog_history,
@@ -625,12 +622,12 @@ class LocalGPT:
 
     @staticmethod
     def _add_source_references(
-        history: List[List[str]],
+        history: List[dict],
         scores: List[float],
         files: List[str],
         partial_text: str,
         threshold: float = 0.44
-    ) -> List[List[str]]:
+    ) -> List[dict]:
         """
         Appends file source references to the final response text based on score thresholds and
         updates conversation history.
@@ -652,7 +649,7 @@ class LocalGPT:
                 partial_text += "\n\n\n".join(sources_text)
             elif scores:
                 partial_text += sources_text[0]
-            history[-1][1] = partial_text
+            history[-1]["content"] = partial_text
         return history
 
     def generate_response_stream(
@@ -705,12 +702,12 @@ class LocalGPT:
             is_use_tools=is_use_tools,
             uid=uid
         )
-
+        history.append({"role": "assistant", "content": None})
         try:
             for token in generator:
                 for data in token["choices"]:  # type: ignore
                     partial_text += data["delta"].get("content", "")  # type: ignore
-                    history[-1][1] = partial_text
+                    history[-1]["content"] = partial_text
                     yield history
         except Exception as ex:
             logger.error(f"Error - {ex}")
@@ -745,7 +742,6 @@ class LocalGPT:
             history = []
         history.append({"role": "user", "content": message["files"]})
         history.append({"role": "user", "content": message["text"]})
-        # new_history = history + [[message, None]]
         self._queue += 1
         logger.info(f"The question has been processed. UID - [{uid}]")
         return "", history, uid
