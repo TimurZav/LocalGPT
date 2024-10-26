@@ -261,7 +261,7 @@ class LocalGPT:
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
         for file in files:
             retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
-        if retrieved_docs and mode == MODES[1]:
+        if retrieved_docs and mode == MODES[0]:
             last_user_message = (
                 f"Контекст: {retrieved_docs}\n\nИспользуя только контекст, ответь на вопрос: "
                 f"{last_user_message}"

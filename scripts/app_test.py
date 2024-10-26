@@ -517,15 +517,25 @@ class LocalGPT:
 
         :return: A generator object containing the chat completion responses after function integration.
         """
-        self.llm.chat_format = "chatml-function-calling"
-        generator = self.llm.create_chat_completion(
-            messages=messages,
-            temperature=temp,
-            top_k=top_k,
-            top_p=top_p,
-            tools=tools,
-            tool_choice={True: "auto", False: "none"}.get(is_use_tools)
-        )
+        if is_use_tools:
+            self.llm.chat_format = "chatml-function-calling"
+            generator = self.llm.create_chat_completion(
+                messages=[messages[0], messages[-1]],
+                temperature=temp,
+                top_k=top_k,
+                top_p=top_p,
+                tools=tools,
+                tool_choice="auto"
+            )
+        else:
+            self.llm.chat_format = "chat_template.default"
+            return self.llm.create_chat_completion(
+                messages=messages,
+                stream=True,
+                temperature=temp,
+                top_k=top_k,
+                top_p=top_p
+            )
         available_functions = {
             "get_current_weather": get_current_weather,
             "calculate": calculate,
@@ -544,7 +554,7 @@ class LocalGPT:
             })
         self.llm.chat_format = "chat_template.default"
         return self.llm.create_chat_completion(
-            messages=messages,
+            messages=[messages[0], messages[-1]],
             stream=True,
             temperature=temp,
             top_k=top_k,
@@ -586,7 +596,7 @@ class LocalGPT:
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
         for file in files:
             retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
-        if retrieved_docs and mode == MODES[1]:
+        if retrieved_docs and mode == MODES[0]:
             last_user_message = (
                 f"Контекст: {retrieved_docs}\n\nИспользуя только контекст, ответь на вопрос: "
                 f"{last_user_message}"
