@@ -1,5 +1,5 @@
 # Используйте базовый образ с поддержкой Python
-FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
+FROM nvidia/cuda:12.6.2-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CMAKE_ARGS="-DLLAMA_CUBLAS=ON" \
