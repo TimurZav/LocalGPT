@@ -10,7 +10,7 @@ anyio==3.7.1
 argilla==2.3.0
 attrs==24.2.0
 backoff==2.2.1
-bcrypt==4.2.2
+bcrypt==4.1.2
 billiard==3.6.4.0
 bitsandbytes==0.44.1
 blis==1.0.1
