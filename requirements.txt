@@ -20,7 +20,7 @@ fastapi==0.115.3
 uvicorn==0.24.0.post1
 passlib==1.7.4
 python-jose==3.3.0
-gradio-modal==0.0.3
+gradio-modal==0.0.4
 requests==2.32.3
 SQLAlchemy==2.0.36
 pydantic==2.9.2
