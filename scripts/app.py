@@ -2,6 +2,7 @@ import re
 import uuid
 import torch
 import os.path
+import requests
 import chromadb
 import tempfile
 import pandas as pd
@@ -13,7 +14,6 @@ from threading import Thread
 from datetime import datetime
 from gradio_modal import Modal
 from tinydb import TinyDB, where
-from functions.functions import *
 from collections import defaultdict
 from langchain.docstore.document import Document
 from typing import List, Optional, Tuple, Iterator
