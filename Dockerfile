@@ -20,7 +20,7 @@ RUN apt-get install -y software-properties-common && \
     git-all
 
 # Обновите пакеты до последней версии
-RUN apt-get -y upgrade
+RUN apt-get -y upgrade && apt-get install -y build-essential python3-dev
 
 # Обновить PIP (менеджер пакетов Python)
 RUN python3 -m pip install --upgrade pip
