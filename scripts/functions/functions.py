@@ -1,5 +1,5 @@
 import requests
-from scripts.__init__ import DATABASE_URL
+from .. import DATABASE_URL
 from sqlalchemy import create_engine, text
 
 # Функция для интеграции в LLM через tools
