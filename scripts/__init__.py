@@ -41,10 +41,7 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-REPO_ID: str = "MaziyarPanahi/Llama-3.2-3B-Instruct-GGUF"
-MODEL: str = "Llama-3.2-3B-Instruct.Q8_0.gguf"
-REPO: str = f"https://huggingface.co/{REPO_ID}/resolve/main/{MODEL}"
-MODEL_NAME: str = f"{REPO_ID}/{MODEL}"
+REPO_ID: str = "unsloth/Llama-3.2-11B-Vision-Instruct"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 

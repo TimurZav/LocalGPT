@@ -1,14 +1,15 @@
 import re
-import json
 import uuid
+import torch
 import os.path
 import chromadb
 import tempfile
 import pandas as pd
 import gradio as gr
+from PIL import Image
 from re import Pattern
 from __init__ import *
-from llama_cpp import Llama
+from threading import Thread
 from datetime import datetime
 from gradio_modal import Modal
 from tinydb import TinyDB, where
@@ -16,11 +17,10 @@ from functions.functions import *
 from collections import defaultdict
 from langchain.docstore.document import Document
 from typing import List, Optional, Tuple, Iterator
-from huggingface_hub.file_download import http_get
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-
+from transformers import MllamaForConditionalGeneration, AutoProcessor, TextIteratorStreamer
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger: logging.getLogger = get_logger(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
@@ -467,7 +467,7 @@ class DocumentManager:
 
 class LocalGPT:
     def __init__(self):
-        self.llm: Optional[Llama] = self.load_or_initialize_model()
+        self.model, self.processor = self.load_or_initialize_model()
         self._queue: int = 0
         self.document_manager: DocumentManager = DocumentManager()
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
@@ -475,7 +475,7 @@ class LocalGPT:
         self.prompt_manager: SystemPromptManager = SystemPromptManager()
 
     @staticmethod
-    def load_or_initialize_model() -> Llama:
+    def load_or_initialize_model():
         """
         Loads and initializes the Llama model from a specified repository.
 
@@ -486,95 +486,19 @@ class LocalGPT:
 
         :return: An instance of the Llama model initialized with the specified parameters.
         """
-        os.makedirs(MODELS_DIR, exist_ok=True)
-        final_model_path: str = os.path.join(MODELS_DIR, MODEL_NAME)
-        os.makedirs(os.path.dirname(final_model_path), exist_ok=True)
-
-        if not os.path.exists(final_model_path):
-            with open(final_model_path, "wb") as f:
-                http_get(REPO, f)
-
-        return Llama(
-            n_gpu_layers=-1,
-            model_path=final_model_path,
-            n_ctx=CONTEXT_SIZE,
-            n_parts=1,
+        model = MllamaForConditionalGeneration.from_pretrained(
+            REPO_ID,
+            torch_dtype=torch.bfloat16,
+            cache_dir=MODELS_DIR
         )
-
-    def _integrate_functions(
-        self,
-        messages: List[dict],
-        top_k: int,
-        top_p: float,
-        temp: float,
-        is_use_tools: bool
-    ):
-        """
-        Integrates function calls within a chat model by generating chat completions,
-        invoking available functions based on the model's output, and returning the updated
-        chat completion generator.
-
-        :param messages: A list of message dictionaries representing the conversation context.
-        :param top_k: The number of top tokens to sample from during generation.
-        :param top_p: The cumulative probability threshold for nucleus sampling.
-        :param temp: The temperature to control the randomness of the generated output.
-        :param is_use_tools: A boolean indicating whether to enable tool usage (auto) or not (none).
-
-        :return: A generator object containing the chat completion responses after function integration.
-        """
-        if is_use_tools:
-            self.llm.chat_format = "chatml-function-calling"
-            generator = self.llm.create_chat_completion(
-                messages=[messages[0], messages[-1]],
-                temperature=temp,
-                top_k=top_k,
-                top_p=top_p,
-                tools=tools,
-                tool_choice="auto"
-            )
-        else:
-            self.llm.chat_format = "chat_template.default"
-            return self.llm.create_chat_completion(
-                messages=messages,
-                stream=True,
-                temperature=temp,
-                top_k=top_k,
-                top_p=top_p
-            )
-        available_functions = {
-            "get_current_weather": get_current_weather,
-            "calculate": calculate,
-            "generate_sql_query": generate_sql_query
-        }
-        for tool_call in generator["choices"][0]["message"].get("tool_calls", []):
-            function_name = tool_call["function"]["name"]
-            function_to_call = available_functions[function_name]
-            function_args = json.loads(tool_call["function"]["arguments"])
-            function_response = function_to_call(**function_args)
-            logger.info(function_response)
-            messages.append({
-                "role": "tool",
-                "content": function_response,
-                "tool_call_id": tool_call["id"],
-            })
-        self.llm.chat_format = "chat_template.default"
-        return self.llm.create_chat_completion(
-            messages=[messages[0]] + messages[-1:],
-            stream=True,
-            temperature=temp,
-            top_k=top_k,
-            top_p=top_p
-        )
+        processor = AutoProcessor.from_pretrained(REPO_ID)
+        return model, processor
 
     def generate_chat_completion(
         self,
         history: List[dict],
         retrieved_docs: str,
         mode: str,
-        top_k: int,
-        top_p: float,
-        temp: float,
-        is_use_tools: bool,
         uid: str
     ):
         """
@@ -588,17 +512,11 @@ class LocalGPT:
         :param retrieved_docs: A string containing documents retrieved for context, which may include
                                HTML anchor tags.
         :param mode: A string indicating the mode of response generation.
-        :param top_k: An integer specifying the number of top tokens to sample from during generation.
-        :param top_p: A float representing the cumulative probability threshold for token sampling (nucleus sampling).
-        :param temp: A float that controls the randomness of the output; higher values produce more
-                     random responses.
-        :param is_use_tools: A boolean indicating whether to enable tool usage (auto) or not (none).
         :param uid: A unique identifier for the user, used for logging purposes.
         :return: A generator for the chat completion response and a list of files extracted from the
                  retrieved documents.
         """
         last_user_message: str = history[-1].get("content")
-        image_url: Optional[str] = None
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
         for file in files:
             retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
@@ -608,45 +526,68 @@ class LocalGPT:
                 f"{last_user_message}"
             )
         logger.info(f"The question has been fully formed [uid - {uid}]")
-        
+
+        images = []
         pair_count = 0  # Счетчик пар "user-assistant"
         temp_history = []  # Временный список для обратного добавления диалогов
         for message in reversed(history):
             if message["role"] == "user" and pair_count == 0:
                 continue
             if message["role"] == "user" and isinstance(message["content"], tuple):
-                image_url: str = history[-2].get("content")[0]
-                history_msg: str = temp_history[-1]["content"]
-                image_path: str = message["content"][0]
-                temp_history.pop(-1)
+                images.append(Image.open(message["content"][0]).convert("RGB"))
                 temp_history.append({
                     "role": "user",
                     "content": [
-                        {"type": "image_url", "image_url": {"url": image_path}},
-                        {"type": "text", "text": history_msg}
+                        {"type": "text", "text": temp_history[-1]["content"]},
+                        {"type": "image"}
                     ]
                 })
-            else:
-                temp_history.append(message)
+            elif message["role"] == "user":
+                temp_history.append({
+                    "role": "user",
+                    "content": [{"type": "text", "text": message["content"]}],
+                })
             if message["role"] == "assistant":
                 pair_count += 1
+                temp_history.append({
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": message["content"]}
+                    ],
+                })
             if pair_count == 3:
                 break
-        
+
         dialog_history: List[dict] = list(reversed(temp_history))
         messages = [
-            {"role": "system", "content": self.prompt_manager.system_prompt},
-            *dialog_history,
-            {
+            *dialog_history
+        ]
+        if len(history) > 1 and isinstance(history[-2].get("content"), tuple):
+            images.append(Image.open(history[-2].get("content")[0]).convert("RGB"))
+            messages.append({
                 "role": "user",
                 "content": [
-                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": last_user_message},
+                    {"type": "image"}
+                ]
+            })
+        else:
+            messages.append({
+                "role": "user",
+                "content": [
                     {"type": "text", "text": last_user_message}
                 ]
-            }
-        ]
-        generator = self._integrate_functions(messages, top_k, top_p, temp, is_use_tools)
-        return generator, files
+            })
+
+        texts = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+        if not images:
+            inputs = self.processor(text=texts, return_tensors="pt")
+        else:
+            inputs = self.processor(text=texts, images=images, return_tensors="pt")
+
+        streamer = TextIteratorStreamer(self.processor, skip_special_tokens=True, skip_prompt=True)
+        generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=MAX_NEW_TOKENS)
+        return generation_kwargs, streamer, files
 
     @staticmethod
     def _add_source_references(
@@ -685,11 +626,7 @@ class LocalGPT:
         history: List[dict],
         mode: str,
         retrieved_docs: str,
-        top_p: float,
-        top_k: int,
-        temp: float,
         scores: List[float],
-        is_use_tools: bool,
         uid: str
     ) -> Iterator[List[List[str]]]:
         """
@@ -704,11 +641,7 @@ class LocalGPT:
         :param history: List of conversation pairs (user input and bot responses).
         :param mode: Operation mode, which influences the use of context in responses.
         :param retrieved_docs: Relevant documents retrieved to help answer the user query.
-        :param top_p: Probability for nucleus sampling, controls randomness of responses.
-        :param top_k: Number of top probable tokens considered for generation.
-        :param temp: Temperature for response generation, influencing creativity.
         :param scores: List of scores associated with retrieved documents for source filtering.
-        :param is_use_tools: A boolean indicating whether to enable tool usage (auto) or not (none).
         :param uid: Unique identifier for the current user session, useful for logging and tracking.
         :return: Yields updated conversation history after each token generated, and the final response with sources.
         """
@@ -720,29 +653,21 @@ class LocalGPT:
         partial_text = ""
         logger.info(f"Beginning response generation [uid - {uid}]")
 
-        generator, files = self.generate_chat_completion(
+        generation_kwargs, streamer, files = self.generate_chat_completion(
             history=history,
             retrieved_docs=retrieved_docs,
             mode=mode,
-            top_k=top_k,
-            top_p=top_p,
-            temp=temp,
-            is_use_tools=is_use_tools,
             uid=uid
         )
+
         history.append({"role": "assistant", "content": None})
-        try:
-            for token in generator:
-                for data in token["choices"]:  # type: ignore
-                    partial_text += data["delta"].get("content", "")  # type: ignore
-                    history[-1]["content"] = partial_text
-                    yield history
-        except Exception as ex:
-            logger.error(f"Error - {ex}")
-            partial_text += (
-                "\nContext too large. Try reducing it or adjusting the output context amount in settings."
-            )
-            history[-1][1] = partial_text
+        thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+        thread.start()
+        buffer = ""
+
+        for new_text in streamer:
+            buffer += new_text
+            history[-1]["content"] = buffer
             yield history
 
         logger.info(f"Response generation completed [uid - {uid}]")
@@ -819,12 +744,11 @@ class LocalGPT:
                             value=self.prompt_manager.mode,
                             show_label=False
                         )
-                        is_use_tools = gr.Checkbox(label="Использовать функции")
 
                 with gr.Row():
                     with gr.Column(scale=10):
                         chatbot = gr.Chatbot(
-                            label=f"LLM: {self.llm.metadata['general.name']}",
+                            label=f"LLM: {REPO_ID}",
                             height=500,
                             type="messages",
                             show_copy_button=True,
@@ -875,7 +799,7 @@ class LocalGPT:
 
             with gr.Tab("Настройки", visible=False) as settings_tab:
                 with gr.Row(elem_id="model_selector_row"):
-                    models = [MODEL_NAME]
+                    models = [REPO_ID]
                     gr.Dropdown(
                         choices=models,
                         value=models[0],
@@ -909,31 +833,6 @@ class LocalGPT:
                             step=10,
                             interactive=True,
                             label="Пересечение"
-                        )
-                    with gr.Tab(label="Параметры генерации"):
-                        top_p = gr.Slider(
-                            minimum=0.0,
-                            maximum=1.0,
-                            value=0.9,
-                            step=0.05,
-                            interactive=True,
-                            label="Top-p",
-                        )
-                        top_k = gr.Slider(
-                            minimum=10,
-                            maximum=100,
-                            value=80,
-                            step=5,
-                            interactive=True,
-                            label="Top-k",
-                        )
-                        temp = gr.Slider(
-                            minimum=0.0,
-                            maximum=2.0,
-                            value=0.1,
-                            step=0.1,
-                            interactive=True,
-                            label="Temp"
                         )
 
                 with gr.Accordion("Системный промпт", open=False):
@@ -1052,7 +951,7 @@ class LocalGPT:
                 queue=True,
             ).success(
                 fn=self.generate_response_stream,
-                inputs=[chatbot, collection_radio, retrieved_docs, top_p, top_k, temp, scores, is_use_tools, uid],
+                inputs=[chatbot, collection_radio, retrieved_docs, scores, uid],
                 outputs=chatbot,
                 queue=True
             )
