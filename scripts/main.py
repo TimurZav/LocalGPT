@@ -1,7 +1,7 @@
 import uvicorn
 import gradio as gr
+from app import LocalGPT
 from fastapi import FastAPI
-from app_test import LocalGPT
 from server.auth.auth_router import auth_router
 from server.health.health_router import health_router
 
