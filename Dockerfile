@@ -33,7 +33,7 @@ RUN python3 -V
 
 # Копируйте файлы зависимостей (если есть) и другие необходимые файлы
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-deps --no-cache-dir -r requirements.txt
 
 # Создайте директорию для приложения
 RUN mkdir /app && mkdir /app/chroma
