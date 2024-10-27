@@ -1,3 +1,5 @@
+setuptools==75.2.0
+wheel==0.44.0
 sentence-transformers==3.2.1
 langchain==0.3.4
 langchain-community==0.3.3

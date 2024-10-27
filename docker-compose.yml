@@ -5,9 +5,9 @@ services:
     build: .
     restart: always
     volumes:
-      - ./models:/models  # Монтируйте папку с моделями внутрь контейнера
-      - ./chroma:/chroma
-      - ./upload_files:/upload_files
+      - ./data/models:/models  # Монтируйте папку с моделями внутрь контейнера
+      - ./data/chroma:/chroma
+      - ./data/upload_files:/upload_files
       - ./scripts:/app
     ports:
       - "8001:8001"
