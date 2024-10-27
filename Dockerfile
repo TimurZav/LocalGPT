@@ -23,7 +23,7 @@ RUN apt-get install -y software-properties-common && \
 RUN apt-get -y upgrade
 
 # Обновить PIP (менеджер пакетов Python)
-RUN python3 -m pip install --upgrade pip
+RUN pip install pipx
 RUN python3 -V
 # Установите PYVER в качестве интерпретатора Python по умолчанию
 RUN update-alternatives --install /usr/bin/python3 python /usr/bin/python$PYVER 1
