@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
-from scripts.server.auth.database import SessionLocal, User, init_db
+from database import SessionLocal, User, init_db
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 
