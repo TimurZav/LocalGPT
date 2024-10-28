@@ -490,7 +490,7 @@ class LocalGPT:
             REPO_ID,
             torch_dtype=torch.bfloat16,
             cache_dir=MODELS_DIR
-        )
+        ).to("cuda")
         processor = AutoProcessor.from_pretrained(REPO_ID)
         return model, processor
 
@@ -581,9 +581,9 @@ class LocalGPT:
 
         texts = self.processor.apply_chat_template(messages, add_generation_prompt=True)
         if not images:
-            inputs = self.processor(text=texts, return_tensors="pt").to("cuda")
+            inputs = self.processor(text=texts, return_tensors="pt")
         else:
-            inputs = self.processor(text=texts, images=images, return_tensors="pt").to("cuda")
+            inputs = self.processor(text=texts, images=images, return_tensors="pt")
 
         streamer = TextIteratorStreamer(self.processor, skip_special_tokens=True, skip_prompt=True)
         generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=MAX_NEW_TOKENS)
