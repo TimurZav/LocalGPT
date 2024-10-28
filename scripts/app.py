@@ -490,7 +490,7 @@ class LocalGPT:
             REPO_ID,
             torch_dtype=torch.bfloat16,
             cache_dir=MODELS_DIR
-        ).to("cuda")
+        )
         processor = AutoProcessor.from_pretrained(REPO_ID)
         return model, processor
 
