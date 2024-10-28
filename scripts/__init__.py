@@ -24,7 +24,7 @@ QUERY_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважите�
 LLM_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважительный и честный ассистент."
 
 MODES: list = ["ВНД", "Свободное общение"]
-CONTEXT_SIZE = 4000
+CONTEXT_SIZE = 10000
 
 LOADER_MAPPING: dict = {
     ".csv": (CSVLoader, {}),
@@ -41,8 +41,8 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-REPO_ID: str = "meetkai/functionary-small-v3.2-GGUF"
-MODEL: str = "functionary-small-v3.2.Q8_0.gguf"
+REPO_ID: str = "IlyaGusev/saiga_llama3_8b_gguf"
+MODEL: str = "model-q8_0.gguf"
 REPO: str = f"https://huggingface.co/{REPO_ID}/resolve/main/{MODEL}"
 MODEL_NAME: str = f"{REPO_ID}/{MODEL}"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
