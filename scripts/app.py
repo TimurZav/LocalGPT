@@ -581,9 +581,9 @@ class LocalGPT:
 
         texts = self.processor.apply_chat_template(messages, add_generation_prompt=True)
         if not images:
-            inputs = self.processor(text=texts, return_tensors="pt")
+            inputs = self.processor(text=texts, return_tensors="pt").to(self.model.device)
         else:
-            inputs = self.processor(text=texts, images=images, return_tensors="pt")
+            inputs = self.processor(text=texts, images=images, return_tensors="pt").to(self.model.device)
 
         streamer = TextIteratorStreamer(self.processor, skip_special_tokens=True, skip_prompt=True)
         generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=MAX_NEW_TOKENS)
