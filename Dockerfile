@@ -32,6 +32,9 @@ RUN update-alternatives --set python /usr/bin/python$PYVER
 RUN update-alternatives --set python /usr/bin/python$PYVER
 RUN python3 -V
 
+# Скачиваем Ollama
+RUN curl -fsSL https://ollama.com/install.sh | sh
+
 # Копируйте файлы зависимостей (если есть) и другие необходимые файлы
 COPY requirements.txt .
 RUN pip install --no-deps --no-cache-dir -r requirements.txt

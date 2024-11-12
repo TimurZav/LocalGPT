@@ -522,14 +522,52 @@ class LocalGPT:
                 f"Контекст: {retrieved_docs}\n\nИспользуя только контекст, ответь на вопрос: "
                 f"{last_user_message}"
             )
-        # Creating a copy of history and replacing content with last_user_message
-        extended_history = copy.deepcopy(history)
-        extended_history[-1]["content"] = last_user_message
+
+        pair_count = 0  # Счетчик пар "user-assistant"
+        temp_history = []  # Временный список для обратного добавления диалогов
+        for message in reversed(history):
+            if message["role"] == "user" and pair_count == 0:
+                continue
+            if message["role"] == "user" and isinstance(message["content"], tuple):
+                temp_history.append({
+                    "role": "user",
+                    "content": temp_history[-1]["content"],
+                    "images": [message["content"][0]]
+                })
+            elif message["role"] == "user":
+                temp_history.append({
+                    "role": "user",
+                    "content": message["content"]
+                })
+            if message["role"] == "assistant":
+                pair_count += 1
+                temp_history.append({
+                    "role": "assistant",
+                    "content": message["content"]
+                })
+            if pair_count == 3:
+                break
+
+        dialog_history: List[dict] = list(reversed(temp_history))
+        messages = [
+            *dialog_history
+        ]
+        if len(history) > 1 and isinstance(history[-2].get("content"), tuple):
+            messages.append({
+                "role": "user",
+                "content": last_user_message,
+                "images": [history[-2].get("content")[0]]
+            })
+        else:
+            messages.append({
+                "role": "user",
+                "content": last_user_message
+            })
 
         logger.info(f"The question has been fully formed [uid - {uid}]")
         stream = ollama.chat(
             model=MODEL,
-            messages=extended_history,
+            messages=messages,
             stream=True,
         )
         return stream, files
