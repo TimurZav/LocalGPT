@@ -1,15 +1,15 @@
 import re
 import uuid
-import torch
+import copy
+import ollama
 import os.path
 import chromadb
 import tempfile
+import subprocess
 import pandas as pd
 import gradio as gr
-from PIL import Image
 from re import Pattern
 from __init__ import *
-from threading import Thread
 from datetime import datetime
 from gradio_modal import Modal
 from tinydb import TinyDB, where
@@ -20,7 +20,6 @@ from typing import List, Optional, Tuple, Iterator
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from transformers import MllamaForConditionalGeneration, AutoProcessor, TextIteratorStreamer
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger: logging.getLogger = get_logger(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
@@ -467,7 +466,7 @@ class DocumentManager:
 
 class LocalGPT:
     def __init__(self):
-        self.model, self.processor = self.load_or_initialize_model()
+        self.load_or_initialize_model()
         self._queue: int = 0
         self.document_manager: DocumentManager = DocumentManager()
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
@@ -486,16 +485,14 @@ class LocalGPT:
 
         :return: An instance of the Llama model initialized with the specified parameters.
         """
-        model = MllamaForConditionalGeneration.from_pretrained(
-            REPO_ID,
-            torch_dtype=torch.bfloat16,
-            cache_dir=MODELS_DIR
-        ).to("cuda")
-        processor = AutoProcessor.from_pretrained(REPO_ID)
-        return model, processor
+        try:
+            subprocess.run(["ollama", "pull", MODEL], check=True)
+            logger.info(f"The model {MODEL} has been successfully downloaded")
+        except subprocess.CalledProcessError:
+            logger.info(f"The model {MODEL} could not be downloaded")
 
+    @staticmethod
     def generate_chat_completion(
-        self,
         history: List[dict],
         retrieved_docs: str,
         mode: str,
@@ -525,69 +522,17 @@ class LocalGPT:
                 f"Контекст: {retrieved_docs}\n\nИспользуя только контекст, ответь на вопрос: "
                 f"{last_user_message}"
             )
+        # Creating a copy of history and replacing content with last_user_message
+        extended_history = copy.deepcopy(history)
+        extended_history[-1]["content"] = last_user_message
+
         logger.info(f"The question has been fully formed [uid - {uid}]")
-
-        images = []
-        pair_count = 0  # Счетчик пар "user-assistant"
-        temp_history = []  # Временный список для обратного добавления диалогов
-        for message in reversed(history):
-            if message["role"] == "user" and pair_count == 0:
-                continue
-            if message["role"] == "user" and isinstance(message["content"], tuple):
-                images.append(Image.open(message["content"][0]).convert("RGB"))
-                temp_history.append({
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": temp_history[-1]["content"]},
-                        {"type": "image"}
-                    ]
-                })
-            elif message["role"] == "user":
-                temp_history.append({
-                    "role": "user",
-                    "content": [{"type": "text", "text": message["content"]}],
-                })
-            if message["role"] == "assistant":
-                pair_count += 1
-                temp_history.append({
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": message["content"]}
-                    ],
-                })
-            if pair_count == 3:
-                break
-
-        dialog_history: List[dict] = list(reversed(temp_history))
-        messages = [
-            *dialog_history
-        ]
-        if len(history) > 1 and isinstance(history[-2].get("content"), tuple):
-            images.append(Image.open(history[-2].get("content")[0]).convert("RGB"))
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": last_user_message},
-                    {"type": "image"}
-                ]
-            })
-        else:
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": last_user_message}
-                ]
-            })
-
-        texts = self.processor.apply_chat_template(messages, add_generation_prompt=True)
-        if not images:
-            inputs = self.processor(text=texts, return_tensors="pt").to("cuda")
-        else:
-            inputs = self.processor(text=texts, images=images, return_tensors="pt").to("cuda")
-
-        streamer = TextIteratorStreamer(self.processor, skip_special_tokens=True, skip_prompt=True)
-        generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=MAX_NEW_TOKENS)
-        return generation_kwargs, streamer, files
+        stream = ollama.chat(
+            model=MODEL,
+            messages=extended_history,
+            stream=True,
+        )
+        return stream, files
 
     @staticmethod
     def _add_source_references(
@@ -652,21 +597,16 @@ class LocalGPT:
 
         partial_text = ""
         logger.info(f"Beginning response generation [uid - {uid}]")
-
-        generation_kwargs, streamer, files = self.generate_chat_completion(
+        stream, files = self.generate_chat_completion(
             history=history,
             retrieved_docs=retrieved_docs,
             mode=mode,
             uid=uid
         )
-
         history.append({"role": "assistant", "content": None})
-        thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
-        thread.start()
         buffer = ""
-
-        for new_text in streamer:
-            buffer += new_text
+        for chunk in stream:
+            buffer += chunk['message']['content']
             history[-1]["content"] = buffer
             yield history
 
@@ -748,7 +688,7 @@ class LocalGPT:
                 with gr.Row():
                     with gr.Column(scale=10):
                         chatbot = gr.Chatbot(
-                            label=f"LLM: {REPO_ID}",
+                            label=f"LLM: {MODEL}",
                             height=500,
                             type="messages",
                             show_copy_button=True,
@@ -799,7 +739,7 @@ class LocalGPT:
 
             with gr.Tab("Настройки", visible=False) as settings_tab:
                 with gr.Row(elem_id="model_selector_row"):
-                    models = [REPO_ID]
+                    models = [MODEL]
                     gr.Dropdown(
                         choices=models,
                         value=models[0],

@@ -41,7 +41,7 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-REPO_ID: str = "unsloth/Llama-3.2-11B-Vision-Instruct"
+MODEL: str = "llama3.1"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 
