@@ -486,7 +486,7 @@ class LocalGPT:
         :return: An instance of the Llama model initialized with the specified parameters.
         """
         try:
-            # subprocess.run(["ollama", "pull", MODEL], check=True)
+            subprocess.run(["ollama", "pull", MODEL], check=True)
             logger.info(f"The model {MODEL} has been successfully downloaded")
         except subprocess.CalledProcessError:
             logger.info(f"The model {MODEL} could not be downloaded")
