@@ -486,7 +486,7 @@ class LocalGPT:
         :return: An instance of the Llama model initialized with the specified parameters.
         """
         try:
-            subprocess.run(["ollama", "pull", MODEL], check=True)
+            # subprocess.run(["ollama", "pull", MODEL], check=True)
             logger.info(f"The model {MODEL} has been successfully downloaded")
         except subprocess.CalledProcessError:
             logger.info(f"The model {MODEL} could not be downloaded")
@@ -528,6 +528,7 @@ class LocalGPT:
         for message in reversed(history):
             if message["role"] == "user" and pair_count == 0:
                 continue
+
             if message["role"] == "user" and isinstance(message["content"], tuple):
                 temp_history.append({
                     "role": "user",
@@ -539,12 +540,13 @@ class LocalGPT:
                     "role": "user",
                     "content": message["content"]
                 })
-            if message["role"] == "assistant":
+            elif message["role"] == "assistant":
                 pair_count += 1
                 temp_history.append({
                     "role": "assistant",
                     "content": message["content"]
                 })
+
             if pair_count == 3:
                 break
 
