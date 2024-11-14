@@ -33,6 +33,7 @@ RUN update-alternatives --set python /usr/bin/python$PYVER
 RUN python3 -V
 
 # Скачиваем Ollama
+RUN apt install curl
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
 # Копируйте файлы зависимостей (если есть) и другие необходимые файлы
