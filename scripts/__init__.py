@@ -41,7 +41,7 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-MODEL: str = "llama3.2-vision"
+MODEL: str = "llama3.2-vision:90b"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 
