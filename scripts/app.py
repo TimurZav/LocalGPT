@@ -487,6 +487,7 @@ class LocalGPT:
         """
         try:
             subprocess.run(["ollama", "pull", MODEL], check=True)
+            subprocess.run(["ollama", "run", MODEL], check=True)
             logger.info(f"The model {MODEL} has been successfully downloaded")
         except subprocess.CalledProcessError:
             logger.info(f"The model {MODEL} could not be downloaded")
