@@ -4,7 +4,8 @@ FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     CMAKE_ARGS="-DLLAMA_CUBLAS=ON" \
     FORCE_CMAKE=1 \
-    SETUPTOOLS_USE_DISTUTILS=stdlib
+    SETUPTOOLS_USE_DISTUTILS=stdlib \
+    OLLAMA_MODELS=/data/models
 
 # Обновляем пакеты и устанавливаем libreoffice
 RUN apt update -y && apt upgrade -y && apt install libreoffice -y && apt install pip -y  \
@@ -48,4 +49,4 @@ WORKDIR /scripts
 # Вместо этого, они будут подключены через volumes в docker-compose.yml
 
 # Запустите скрипт при запуске контейнера
-CMD ["python3", "-u", "main.py"]
+ENTRYPOINT ["sh", "-c", "ollama serve & python3 -u main.py"]
