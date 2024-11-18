@@ -1,6 +1,5 @@
 import re
 import uuid
-import copy
 import ollama
 import os.path
 import chromadb
