@@ -391,14 +391,13 @@ class DocumentManager:
         :return: A tuple with a formatted string of retrieved documents and a list of their similarity scores.
         """
         if (
-            not self.db
-            or collection_radio != MODES[0]
+            collection_radio != MODES[0]
             or not history
             or history[-1]["role"] != "user"
         ):
             return "Появятся после задавания вопросов", []
 
-        last_user_message = history[-1][0]
+        last_user_message = history[-1].get("content")
         docs = self.db.similarity_search_with_score(last_user_message, k_documents)
         scores: list = []
         data = defaultdict(str)
@@ -603,7 +602,7 @@ class LocalGPT:
                 partial_text += "\n\n\n".join(sources_text)
             elif scores:
                 partial_text += sources_text[0]
-            history[-1]["content"] = partial_text
+            history[-1]["content"] += partial_text
         return history
 
     def generate_response_stream(
@@ -985,5 +984,5 @@ class LocalGPT:
                 js=LOCAL_STORAGE
             )
 
-        demo.queue(max_size=128, api_open=False)
+        demo.queue(max_size=128, api_open=False, default_concurrency_limit=2)
         return demo
