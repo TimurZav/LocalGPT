@@ -31,9 +31,6 @@ RUN apt update -y &&  \
     update-alternatives --set python /usr/bin/python$PYVER && \
     python3 -V
 
-# Установка Ollama
-RUN curl -fsSL https://ollama.com/install.sh | sh
-
 # Скопировать зависимости и установить их
 COPY requirements.txt .
 RUN pip install --no-deps --no-cache-dir -r requirements.txt
