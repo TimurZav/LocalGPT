@@ -1,16 +1,15 @@
 import re
 import uuid
-import ollama
 import os.path
 import chromadb
 import tempfile
-import subprocess
 import pandas as pd
 import gradio as gr
 from re import Pattern
 from __init__ import *
 from datetime import datetime
 from gradio_modal import Modal
+from ollama import AsyncClient
 from tinydb import TinyDB, where
 from functions.functions import *
 from collections import defaultdict
@@ -19,6 +18,7 @@ from typing import List, Optional, Tuple, Iterator
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger: logging.getLogger = get_logger(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
@@ -464,7 +464,6 @@ class DocumentManager:
 
 class LocalGPT:
     def __init__(self):
-        self.load_or_initialize_model()
         self._queue: int = 0
         self.document_manager: DocumentManager = DocumentManager()
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
@@ -472,31 +471,12 @@ class LocalGPT:
         self.prompt_manager: SystemPromptManager = SystemPromptManager()
 
     @staticmethod
-    def load_or_initialize_model():
-        """
-        Loads and initializes the Llama model from a specified repository.
-
-        This method creates necessary directories for model storage if they do not
-        already exist. It checks if the model file is present; if not, it downloads
-        the model from the specified repository. Finally, it initializes and returns
-        a Llama model instance with the specified configuration.
-
-        :return: An instance of the Llama model initialized with the specified parameters.
-        """
-        try:
-            subprocess.run(["ollama", "pull", MODEL], check=True)
-            subprocess.run(["ollama", "run", MODEL], check=True)
-            logger.info(f"The model {MODEL} has been successfully downloaded")
-        except subprocess.CalledProcessError:
-            logger.info(f"The model {MODEL} could not be downloaded")
-
-    @staticmethod
-    def generate_chat_completion(
+    def generate_completion_with_context(
         history: List[dict],
         retrieved_docs: str,
         mode: str,
         uid: str
-    ):
+    ) -> Tuple[list, list]:
         """
         Generate a chat completion response based on user history and retrieved documents.
 
@@ -566,12 +546,7 @@ class LocalGPT:
             })
 
         logger.info(f"The question has been fully formed [uid - {uid}]")
-        stream = ollama.chat(
-            model=MODEL,
-            messages=messages,
-            stream=True,
-        )
-        return stream, files
+        return messages, files
 
     @staticmethod
     def _add_source_references(
@@ -605,7 +580,7 @@ class LocalGPT:
             history[-1]["content"] += partial_text
         return history
 
-    def generate_response_stream(
+    async def generate_response_stream(
         self,
         history: List[dict],
         mode: str,
@@ -636,15 +611,20 @@ class LocalGPT:
 
         partial_text = ""
         logger.info(f"Beginning response generation [uid - {uid}]")
-        stream, files = self.generate_chat_completion(
+        messages, files = self.generate_completion_with_context(
             history=history,
             retrieved_docs=retrieved_docs,
             mode=mode,
             uid=uid
         )
+        stream = await AsyncClient(host=f"http://{IP_MODEL}").chat(
+            model=MODEL,
+            messages=messages,
+            stream=True,
+        )
         history.append({"role": "assistant", "content": None})
         buffer = ""
-        for chunk in stream:
+        async for chunk in stream:
             buffer += chunk['message']['content']
             history[-1]["content"] = buffer
             yield history
