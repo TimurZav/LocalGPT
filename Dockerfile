@@ -40,4 +40,4 @@ WORKDIR /scripts
 RUN mkdir chroma
 
 # Запуск Ollama и основного скрипта
-ENTRYPOINT ["sh", "-c", "ollama serve & python3 -u main.py"]
+ENTRYPOINT ["sh", "-c", "python3 -u main.py"]
