@@ -6,6 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CMAKE_ARGS="-DLLAMA_CUBLAS=ON" \
     FORCE_CMAKE=1 \
     SETUPTOOLS_USE_DISTUTILS=stdlib \
+    OLLAMA_HOST="host.docker.internal:11434" \
     OLLAMA_MODELS=/data/models \
     PYVER="3.11"
 
