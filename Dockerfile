@@ -6,8 +6,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CMAKE_ARGS="-DLLAMA_CUBLAS=ON" \
     FORCE_CMAKE=1 \
     SETUPTOOLS_USE_DISTUTILS=stdlib \
-    OLLAMA_HOST="host.docker.internal:11434" \
-    OLLAMA_MODELS=/data/models \
     PYVER="3.11"
 
 # Установить обновления, Python и основные зависимости
@@ -31,10 +29,6 @@ RUN apt update -y &&  \
     update-alternatives --install /usr/bin/python3 python /usr/bin/python$PYVER 1 && \
     update-alternatives --set python /usr/bin/python$PYVER && \
     python3 -V
-
-# Установка Ollama
-RUN curl -fsSL https://ollama.com/install.sh | sh
-
 
 # Скопировать зависимости и установить их
 COPY requirements.txt .
