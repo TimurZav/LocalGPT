@@ -41,8 +41,8 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-IP_MODEL: str = "http://89.169.136.209:11434"
-MODEL: str = "llama3.2:1b"
+IP_MODEL: str = "http://localhost:11434"
+MODEL: str = "llama3.2-vision:90b"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 
