@@ -142,7 +142,7 @@ class AuthManager:
         """
         try:
             response = requests.post(
-                f"http://{IP_ADDRESS}/token",
+                f"{IP_ADDRESS}/token",
                 data={"username": username, "password": password},
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=10  # Adding a timeout
@@ -169,7 +169,7 @@ class AuthManager:
         """
         if isinstance(local_data, dict) and local_data.get("is_success", False):
             response = requests.get(
-                f"http://{IP_ADDRESS}/users/me",
+                f"{IP_ADDRESS}/users/me",
                 headers={"Authorization": f"Bearer {local_data['access_token']}"}
             )
             logger.info(f"User is {response.json().get('username')}")
@@ -617,7 +617,7 @@ class LocalGPT:
             mode=mode,
             uid=uid
         )
-        stream = await AsyncClient(host=f"http://{IP_MODEL}").chat(
+        stream = await AsyncClient(host=IP_MODEL).chat(
             model=MODEL,
             messages=messages,
             stream=True,
