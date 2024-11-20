@@ -626,8 +626,7 @@ class LocalGPT:
                 stream=True,
             )
         except (requests.exceptions.ConnectTimeout, requests.exceptions.HTTPError) as ex:
-            gr.Warning(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}")
-            return
+            raise Exception(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}") from ex
         history.append({"role": "assistant", "content": None})
         buffer = ""
         async for chunk in stream:
