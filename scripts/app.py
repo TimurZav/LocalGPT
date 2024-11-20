@@ -617,11 +617,17 @@ class LocalGPT:
             mode=mode,
             uid=uid
         )
-        stream = await AsyncClient(host=IP_MODEL).chat(
-            model=MODEL,
-            messages=messages,
-            stream=True,
-        )
+        try:
+            response = requests.get(IP_MODEL, timeout=10)
+            response.raise_for_status()
+            stream = await AsyncClient(host=IP_MODEL).chat(
+                model=MODEL,
+                messages=messages,
+                stream=True,
+            )
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.HTTPError) as ex:
+            gr.Warning(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}")
+            return
         history.append({"role": "assistant", "content": None})
         buffer = ""
         async for chunk in stream:
@@ -964,5 +970,5 @@ class LocalGPT:
                 js=LOCAL_STORAGE
             )
 
-        demo.queue(max_size=128, api_open=False, default_concurrency_limit=2)
+        demo.queue(max_size=128, api_open=False, default_concurrency_limit=5)
         return demo
