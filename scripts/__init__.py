@@ -41,12 +41,12 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-IP_MODEL: str = "localhost:11434"
-MODEL: str = "llama3.2-vision:90b"
+IP_MODEL: str = "http://89.169.136.209:11434"
+MODEL: str = "llama3.2:1b"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 
-IP_ADDRESS = f"{socket.gethostbyname(socket.gethostname())}:8001"
+IP_ADDRESS = f"http://{socket.gethostbyname(socket.gethostname())}:8001"
 
 ABS_PATH: str = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR: str = "../data"
