@@ -11,6 +11,7 @@ from datetime import datetime
 from gradio_modal import Modal
 from ollama import AsyncClient
 from tinydb import TinyDB, where
+from yake import KeywordExtractor
 from functions.functions import *
 from collections import defaultdict
 from langchain.docstore.document import Document
@@ -18,6 +19,7 @@ from typing import List, Optional, Tuple, Iterator
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -219,6 +221,10 @@ class DocumentManager:
         )
         self.collection: str = "all-documents"
         self.db: Optional[Chroma] = None
+        self.segmenter: Segmenter = Segmenter()
+        self.morph_vocab: MorphVocab = MorphVocab()
+        self.morph_tagger: NewsMorphTagger = NewsMorphTagger(NewsEmbedding())
+        self.cache: dict = {}
 
     def initialize_database(self) -> Chroma:
         """
@@ -368,6 +374,61 @@ class DocumentManager:
         os.chmod(FILES_DIR, 0o0777)
         return file_warning
 
+    def lemmatize(self, texts: List[str]) -> List[str]:
+        """
+        Лемматизация текста с использованием кэша.
+        :param texts: Исходный текст.
+        :return: Лемматизированный текст.
+        """
+        result = []
+        for text_ in texts:
+            doc = Doc(text_)
+            doc.segment(self.segmenter)
+            doc.tag_morph(self.morph_tagger)
+
+            lemmatized_tokens = []
+            for token in doc.tokens:
+                if token.text in self.cache:
+                    lemma = self.cache[token.text]
+                else:
+                    token.lemmatize(self.morph_vocab)
+                    lemma = token.lemma
+                    self.cache[token.text] = lemma
+                lemmatized_tokens.append(lemma)
+
+            result.append(" ".join(lemmatized_tokens))
+        return result
+
+    def search_docs(self, sentence: str) -> List[str]:
+        """
+        Поиск чанков, содержащих как можно больше ключевых слов, начиная с полного набора и уменьшая до 2 слов.
+        Также включает соседние чанки (например, если чанк на индексе 9, то берём ещё чанки на 8 и 10).
+
+        :param sentence: Предложение или ключевое слово для поиска.
+        :return: Список текстов чанков, содержащих максимальное количество ключевых слов.
+        """
+        # Инициализация YAKE для извлечения ключевых слов
+        kw_extractor = KeywordExtractor(lan="ru", n=1, top=10)
+        keywords_with_scores = kw_extractor.extract_keywords(sentence)
+        keywords = [kw[0].lower() for kw in keywords_with_scores]
+        sentence_words = re.sub(r'[^\w\s]', '', sentence).lower().split()
+        matched_keywords = [kw for kw in sentence_words if kw in keywords]
+
+        sorted_keywords = self.lemmatize(matched_keywords)
+        documents = self.db.get()["documents"]
+        lemmatized_documents = self.lemmatize(documents)
+
+        results = []
+        for num_keywords in range(len(sorted_keywords)):
+            current_keywords = sorted_keywords[num_keywords:]
+            for i, chunk in enumerate(documents):
+                if all(keyword in lemmatized_documents[i].split() for keyword in current_keywords) \
+                        and chunk not in results:
+                    results.append(chunk)
+            if results:
+                break
+        return results
+
     def retrieve_documents(
         self,
         history: List[dict],
@@ -391,29 +452,33 @@ class DocumentManager:
         :return: A tuple with a formatted string of retrieved documents and a list of their similarity scores.
         """
         if (
-            collection_radio != MODES[0]
+            collection_radio not in [MODES[0], MODES[1]]
             or not history
             or history[-1]["role"] != "user"
         ):
             return "Появятся после задавания вопросов", []
 
         last_user_message = history[-1].get("content")
-        docs = self.db.similarity_search_with_score(last_user_message, k_documents)
-        scores: list = []
-        data = defaultdict(str)
+        if collection_radio == MODES[0]:
+            docs = self.db.similarity_search_with_score(last_user_message, k_documents)
+            scores: list = []
+            data = defaultdict(str)
 
-        for doc in docs:
-            url = (
-                f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
-                rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
-            )
-            document: str = f"Document - {url} ↓"
-            score: float = round(doc[1], 2)
-            scores.append(score)
-            data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
+            for doc in docs:
+                url = (
+                    f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
+                    rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
+                )
+                document: str = f"Document - {url} ↓"
+                score: float = round(doc[1], 2)
+                scores.append(score)
+                data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
 
-        list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
-        logger.info(f"Retrieved context from database for collection '{collection_radio}' [uid - {uid}]")
+            list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
+            logger.info(f"Retrieved context from database for collection '{collection_radio}' [uid - {uid}]")
+        else:
+            list_data = self.search_docs(last_user_message)
+            scores = [0] * len(list_data)
 
         if not list_data:
             return "No documents found in the database", scores
@@ -496,7 +561,7 @@ class LocalGPT:
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
         for file in files:
             retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
-        if retrieved_docs and mode == MODES[0]:
+        if retrieved_docs and mode in [MODES[0], MODES[1]]:
             last_user_message = (
                 f"Контекст: {retrieved_docs}\n\nИспользуя только контекст, ответь на вопрос: "
                 f"{last_user_message}"

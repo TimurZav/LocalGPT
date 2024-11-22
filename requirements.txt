@@ -225,3 +225,5 @@ XlsxWriter==3.2.0
 xxhash==3.5.0
 yarl==1.16.0
 zipp==3.20.2
+yake==0.4.8
+natasha==1.6.0
