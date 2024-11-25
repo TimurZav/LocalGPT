@@ -125,14 +125,19 @@ class VMManager:
     def __init__(self):
         self.server_id: str = "43ba92d7-d3bd-4100-9487-46a3f3ef1db0"
         self.url: str = f"https://api.immers.cloud:8774/v2.1/servers/{self.server_id}"
-        self.headers = {
+        self.headers: dict = {
             "Accept": "application/json",
             "Content-Type": "application/json",
             "User-Agent":
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
         }
 
-    def authenticate(self):
+    def authenticate(self) -> str:
+        """
+        Authenticates with the cloud API to obtain an authorization token.
+        :return: Success message with the token if the request is successful.
+            Error message with details if the request fails.
+        """
         url: str = "https://api.immers.cloud:5000/v3/auth/tokens"
         payload: dict = {
             "auth": {
@@ -140,8 +145,8 @@ class VMManager:
                     "methods": ["password"],
                     "password": {
                         "user": {
-                            "name": LOGIN_SERVER,  # Ваше имя пользователя
-                            "password": PASSWORD_SERVER,  # Ваш пароль
+                            "name": LOGIN_SERVER,
+                            "password": PASSWORD_SERVER,
                             "domain": {
                                 "id": "default"
                             }
@@ -150,7 +155,7 @@ class VMManager:
                 },
                 "scope": {
                     "project": {
-                        "name": LOGIN_SERVER,  # Имя проекта
+                        "name": LOGIN_SERVER,
                         "domain": {
                             "id": "default"
                         }
@@ -158,18 +163,20 @@ class VMManager:
                 }
             }
         }
-
-        # Выполнение POST-запроса
         response = requests.post(url, headers=self.headers, json=payload)
-
-        # Обработка ответа
         if response.status_code == 201:  # 201 Created
             os.environ["OS_TOKEN"] = response.headers.get("X-Subject-Token")
             return f"Авторизация успешна! Токен: {os.environ['OS_TOKEN']}"
         else:
             return f"Ошибка: {response.status_code}. Детали ответа: {response.text}"
 
-    def send_action(self, action: str):
+    def send_action(self, action: str) -> str:
+        """
+        Sends an action command to the server as a POST request.
+        :param action: The action to perform on the server (e.g., "os-start", "os-stop").
+        :return: Success message if the request is successful.
+            Error message with details if the request fails.
+        """
         payload = {action: None}
         response = requests.post(f"{self.url}/action", headers=self.headers, json=payload)
 
@@ -178,7 +185,12 @@ class VMManager:
         else:
             return f"Ошибка: {response.status_code}\nДетали: {response.text}"
 
-    def status(self):
+    def status(self) -> str:
+        """
+        Retrieves the current status of the server.
+        :return: The server's status and last updated date if the request is successful.
+            Error message with details if the request fails.
+        """
         response = requests.get(self.url, headers=self.headers)
         if response.status_code == 200 or response.status_code == 202:
             json_data = response.json()['server']
@@ -187,6 +199,11 @@ class VMManager:
             return f"Ошибка: {response.status_code}\nДетали: {response.text}"
 
     def control_vm(self, action: str):
+        """
+        Controls the server by invoking the corresponding action or method.
+        :param action: The action to perform.
+        :return: The result of the performed action or an error message for invalid actions.
+        """
         actions_map = {
             "Вкл": "os-start",
             "Выкл": "os-stop",
