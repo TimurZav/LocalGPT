@@ -7,13 +7,13 @@ import pandas as pd
 import gradio as gr
 from re import Pattern
 from __init__ import *
-from datetime import datetime
 from gradio_modal import Modal
 from ollama import AsyncClient
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
 from collections import defaultdict
+from datetime import datetime, timedelta
 from langchain.docstore.document import Document
 from typing import List, Optional, Tuple, Iterator
 from langchain_community.vectorstores import Chroma
@@ -194,7 +194,8 @@ class VMManager:
         response = requests.get(self.url, headers=self.headers)
         if response.status_code == 200 or response.status_code == 202:
             json_data = response.json()['server']
-            return f"Статус: '{json_data['status']}'. Последнее дата обновления: {json_data['updated']}"
+            return f"Статус: '{json_data['status']}'. Последняя дата обновления: " \
+                   f"{datetime.strptime(json_data['updated'], '%Y-%m-%dT%H:%M:%SZ') + timedelta(hours=3)}"
         else:
             return f"Ошибка: {response.status_code}\nДетали: {response.text}"
 
