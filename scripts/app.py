@@ -121,6 +121,95 @@ class AnalyticsManager:
         return self.get_analytics()
 
 
+class VMManager:
+    def __init__(self):
+        self.server_id: str = "43ba92d7-d3bd-4100-9487-46a3f3ef1db0"
+        self.url: str = f"https://api.immers.cloud:8774/v2.1/servers/{self.server_id}"
+        self.headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent":
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        }
+
+    def authenticate(self):
+        url: str = "https://api.immers.cloud:5000/v3/auth/tokens"
+        payload: dict = {
+            "auth": {
+                "identity": {
+                    "methods": ["password"],
+                    "password": {
+                        "user": {
+                            "name": "Test",  # Ваше имя пользователя
+                            "password": "Test",  # Ваш пароль
+                            "domain": {
+                                "id": "default"
+                            }
+                        }
+                    }
+                },
+                "scope": {
+                    "project": {
+                        "name": "Test",  # Имя проекта
+                        "domain": {
+                            "id": "default"
+                        }
+                    }
+                }
+            }
+        }
+
+        # Выполнение POST-запроса
+        response = requests.post(url, headers=self.headers, json=payload)
+
+        # Обработка ответа
+        if response.status_code == 201:  # 201 Created
+            os.environ["OS_TOKEN"] = response.headers.get("X-Subject-Token")
+            return f"Авторизация успешна! Токен: {os.environ['OS_TOKEN']}"
+        else:
+            return f"Ошибка: {response.status_code}. Детали ответа: {response.text}"
+
+    def send_action(self, action: str):
+        payload = {action: None}
+        response = requests.post(f"{self.url}/action", headers=self.headers, json=payload)
+
+        if response.status_code == 200 or response.status_code == 202:
+            return f"Запрос '{action}' выполнен успешно!"
+        else:
+            return f"Ошибка: {response.status_code}\nДетали: {response.text}"
+
+    def status(self):
+        response = requests.get(self.url, headers=self.headers)
+        if response.status_code == 200 or response.status_code == 202:
+            json_data = response.json()['server']
+            return f"Статус: '{json_data['status']}'. Последнее дата обновления: {json_data['updated']}"
+        else:
+            return f"Ошибка: {response.status_code}\nДетали: {response.text}"
+
+    def control_vm(self, action: str):
+        actions_map = {
+            "Вкл": "os-start",
+            "Выкл": "os-stop",
+            "Перезагрузить": "reboot",
+            "Архивировать": "shelve",
+            "Разархивировать": "unshelve",
+            "Статус": self.status,
+            "Авторизация": self.authenticate
+        }
+
+        if action not in actions_map:
+            return "Неизвестное действие"
+
+        if action == "Авторизация":
+            return actions_map[action]()
+
+        self.headers["X-Auth-Token"] = os.environ['OS_TOKEN']
+        if callable(actions_map[action]):
+            return actions_map[action]()
+
+        return self.send_action(actions_map[action])
+
+
 class AuthManager:
     def __init__(self, document_manager):
         self.document_manager: DocumentManager = document_manager
@@ -532,6 +621,7 @@ class LocalGPT:
         self._queue: int = 0
         self.document_manager: DocumentManager = DocumentManager()
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
+        self.vm_manager: VMManager = VMManager()
         self.auth_manager: AuthManager = AuthManager(self.document_manager)
         self.prompt_manager: SystemPromptManager = SystemPromptManager()
 
@@ -827,6 +917,24 @@ class LocalGPT:
                         delete = gr.Button("🧹 Удалить", variant="primary")
 
             with gr.Tab("Настройки", visible=False) as settings_tab:
+                with gr.Column():
+                    with gr.Row():
+                        status_output = gr.Textbox(label="Текущий статус сервера", interactive=False)
+                        action_dropdown = gr.Dropdown(
+                            choices=[
+                                "Статус", "Вкл", "Выкл", "Перезагрузить",
+                                "Архивировать", "Разархивировать", "Авторизация"
+                            ],
+                            value="",
+                            label="Выберите операцию с сервером",
+                            interactive=True,
+                        )
+                        action_dropdown.change(
+                            fn=self.vm_manager.control_vm,
+                            inputs=action_dropdown,
+                            outputs=status_output
+                        )
+
                 with gr.Row(elem_id="model_selector_row"):
                     models = [MODEL]
                     gr.Dropdown(
