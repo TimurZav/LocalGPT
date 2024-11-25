@@ -204,7 +204,7 @@ class VMManager:
         :param action: The action to perform.
         :return: The result of the performed action or an error message for invalid actions.
         """
-        actions_map = {
+        actions_map: dict = {
             "Вкл": "os-start",
             "Выкл": "os-stop",
             "Перезагрузить": "reboot",
