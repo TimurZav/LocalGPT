@@ -23,7 +23,7 @@ QUERY_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважите�
 
 LLM_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважительный и честный ассистент."
 
-MODES: list = ["ВНД", "Свободное общение"]
+MODES: list = ["ВНД", "Поиск", "Свободное общение"]
 CONTEXT_SIZE = 4000
 
 LOADER_MAPPING: dict = {
@@ -42,6 +42,8 @@ LOADER_MAPPING: dict = {
 }
 
 IP_MODEL: str = "http://localhost:11434"
+LOGIN_SERVER: str = "Timur1512"
+PASSWORD_SERVER: str = "_VpKEyPt8PjY5r4"
 MODEL: str = "llama3.2-vision:90b"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500

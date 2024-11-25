@@ -140,8 +140,8 @@ class VMManager:
                     "methods": ["password"],
                     "password": {
                         "user": {
-                            "name": "Test",  # Ваше имя пользователя
-                            "password": "Test",  # Ваш пароль
+                            "name": LOGIN_SERVER,  # Ваше имя пользователя
+                            "password": PASSWORD_SERVER,  # Ваш пароль
                             "domain": {
                                 "id": "default"
                             }
@@ -150,7 +150,7 @@ class VMManager:
                 },
                 "scope": {
                     "project": {
-                        "name": "Test",  # Имя проекта
+                        "name": LOGIN_SERVER,  # Имя проекта
                         "domain": {
                             "id": "default"
                         }
