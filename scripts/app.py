@@ -739,13 +739,14 @@ class LocalGPT:
             if function_to_call := available_functions.get(tool["function"]["name"]):
                 func_result = function_to_call(**tool["function"]["arguments"])
                 logger.info(f"Function output: {func_result}")
-                messages.append({
-                    "role": "tool",
-                    "content": func_result,
-                    "tool_calls": response["message"]["tool_calls"]
-                })
+                if func_result:
+                    messages.append({
+                        "role": "tool",
+                        "content": func_result,
+                        "tool_calls": response["message"]["tool_calls"]
+                    })
             else:
-                logger.debug(f"Function not found: {tool.function.name}")
+                logger.debug(f"Function not found: {tool['function']['name']}")
 
     @staticmethod
     def _add_source_references(
@@ -920,14 +921,15 @@ class LocalGPT:
                             value=self.prompt_manager.mode,
                             show_label=False
                         )
-                        # is_use_tools = gr.Checkbox(label="Использовать функции")
+                        is_use_tools = gr.Checkbox(label="Использовать функции")
 
                     with gr.Column():
                         model = gr.Dropdown(
                             choices=MODEL,
                             value=MODEL[0],
                             interactive=True,
-                            show_label=False
+                            show_label=True,
+                            label="Выбор моделей"
                         )
 
                 with gr.Row():

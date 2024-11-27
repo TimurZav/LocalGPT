@@ -1,3 +1,4 @@
+import logging
 import requests
 
 # Функция для интеграции в LLM через tools
@@ -66,7 +67,8 @@ def get_current_weather(location: str) -> str:
     url: str = f"http://api.weatherapi.com/v1/current.json?key={api_key}&q={location}&lang=ru"
     response = requests.get(url, timeout=60)
     if response.status_code != 200:
-        raise Exception(response.text)
+        logging.error(f"Error: {response.text}. Location: {location}")
+        return ""
     weather_data: dict = response.json()
     return f'На данный момент сейчас температура {weather_data["current"]["temp_c"]} градусов по Цельсию. ' \
            f'Погода - { weather_data["current"]["condition"]["text"]}. Локация - {weather_data["location"]["name"]}'
@@ -96,7 +98,7 @@ def calculate(operation: str, number_one: int, number_two: int) -> str:
     elif operation == "divide":
         return f"Ответ является {number_one / number_two}"
     else:
-        raise ValueError(f"Unknown operation {operation}")
+        return ""
 
 
 if __name__ == "__main__":
