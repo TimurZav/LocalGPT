@@ -838,6 +838,18 @@ class LocalGPT:
         logger.info(f"The question has been processed. UID - [{uid}]")
         return "", history, uid
 
+    @staticmethod
+    def add_to_stream(audio, in_stream):
+        if in_stream is None:
+            ret = audio
+        else:
+            ret = (audio[0], np.concatenate((in_stream[1], audio[1])))
+        return audio, ret
+
+    @staticmethod
+    def stop_recording():
+        return gr.Audio(value=None, streaming=True)
+
     def transcribe(self, inputs):
         if inputs is None:
             raise gr.Error(
@@ -850,7 +862,7 @@ class LocalGPT:
         y = y.astype(np.float32)
         y /= np.max(np.abs(y))
 
-        return self.pipeline({"sampling_rate": sr, "raw": y})["text"]
+        return self.pipeline({"sampling_rate": sr, "raw": y}), None
 
     def launch_ui(self):
         """
@@ -912,13 +924,15 @@ class LocalGPT:
                         )
 
                 with gr.Row():
-                    with gr.Column(scale=20):
+                    with gr.Column(scale=1):
+                        stream = gr.State()
+                        input_audio_microphone = gr.Audio(sources=["microphone"], streaming=True)
+                    with gr.Column(scale=10):
                         msg = gr.MultimodalTextbox(
                             label="Отправить сообщение",
                             placeholder="👉 Напишите запрос",
                             show_label=False
                         )
-                        input_audio_microphone = gr.Audio(sources=["microphone"])
 
                 with gr.Row(elem_id="buttons"):
                     like = gr.Button(value="👍 Понравилось")
@@ -1153,9 +1167,19 @@ class LocalGPT:
             )
 
             input_audio_microphone.stop_recording(
+                fn=self.stop_recording,
+                inputs=None,
+                outputs=[input_audio_microphone]
+            ).success(
                 fn=self.transcribe,
-                inputs=[input_audio_microphone],
-                outputs=[msg]
+                inputs=[stream],
+                outputs=[msg, stream]
+            )
+
+            input_audio_microphone.stream(
+                fn=self.add_to_stream,
+                inputs=[input_audio_microphone, stream],
+                outputs=[input_audio_microphone, stream]
             )
 
             demo.load(
