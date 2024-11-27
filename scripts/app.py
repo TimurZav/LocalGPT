@@ -164,11 +164,10 @@ class VMManager:
             }
         }
         response = requests.post(url, headers=self.headers, json=payload)
-        if response.status_code == 201:  # 201 Created
-            os.environ["OS_TOKEN"] = response.headers.get("X-Subject-Token")
-            return f"Авторизация успешна! Токен: {os.environ['OS_TOKEN']}"
-        else:
+        if response.status_code != 201:
             return f"Ошибка: {response.status_code}. Детали ответа: {response.text}"
+        os.environ["OS_TOKEN"] = response.headers.get("X-Subject-Token")
+        return f"Авторизация успешна! Токен: {os.environ['OS_TOKEN']}"
 
     def send_action(self, action: str) -> str:
         """
@@ -180,7 +179,7 @@ class VMManager:
         payload = {action: None}
         response = requests.post(f"{self.url}/action", headers=self.headers, json=payload)
 
-        if response.status_code == 200 or response.status_code == 202:
+        if response.status_code in {200, 202}:
             return f"Запрос '{action}' выполнен успешно!"
         else:
             return f"Ошибка: {response.status_code}\nДетали: {response.text}"
@@ -192,12 +191,11 @@ class VMManager:
             Error message with details if the request fails.
         """
         response = requests.get(self.url, headers=self.headers)
-        if response.status_code == 200 or response.status_code == 202:
-            json_data = response.json()['server']
-            return f"Статус: '{json_data['status']}'. Последняя дата обновления: " \
-                   f"{datetime.strptime(json_data['updated'], '%Y-%m-%dT%H:%M:%SZ') + timedelta(hours=3)}"
-        else:
+        if response.status_code not in {200, 202}:
             return f"Ошибка: {response.status_code}\nДетали: {response.text}"
+        json_data = response.json()['server']
+        return f"Статус: '{json_data['status']}'. Последняя дата обновления: " \
+               f"{datetime.strptime(json_data['updated'], '%Y-%m-%dT%H:%M:%SZ') + timedelta(hours=3)}"
 
     def control_vm(self, action: str):
         """
@@ -755,6 +753,7 @@ class LocalGPT:
 
     async def generate_response_stream(
         self,
+        model: str,
         history: List[dict],
         mode: str,
         retrieved_docs: str,
@@ -770,6 +769,7 @@ class LocalGPT:
         In case of an error (e.g., due to large context size), an error message is appended to the response.
         Once complete, source file references are appended to the final output.
 
+        :param model: Model of the list.
         :param history: List of conversation pairs (user input and bot responses).
         :param mode: Operation mode, which influences the use of context in responses.
         :param retrieved_docs: Relevant documents retrieved to help answer the user query.
@@ -794,7 +794,7 @@ class LocalGPT:
             response = requests.get(IP_MODEL, timeout=10)
             response.raise_for_status()
             stream = await AsyncClient(host=IP_MODEL).chat(
-                model=MODEL,
+                model=model,
                 messages=messages,
                 stream=True,
             )
@@ -837,6 +837,10 @@ class LocalGPT:
         logger.info(f"The question has been processed. UID - [{uid}]")
         return "", history, uid
 
+    @staticmethod
+    def update_chat_label(selected_model):
+        return gr.update(label=f"LLM: {selected_model}")
+
     def launch_ui(self):
         """
         Launch the main user interface for the LocalGPT application.
@@ -874,7 +878,7 @@ class LocalGPT:
             local_data = gr.JSON({}, visible=False)
 
             with gr.Tab("Чат"):
-                with gr.Row():
+                with gr.Row(equal_height=True):
                     with gr.Column():
                         collection_radio = gr.Radio(
                             choices=MODES,
@@ -882,10 +886,18 @@ class LocalGPT:
                             show_label=False
                         )
 
+                    with gr.Column():
+                        model = gr.Dropdown(
+                            choices=MODEL,
+                            value=MODEL[0],
+                            interactive=True,
+                            show_label=False
+                        )
+
                 with gr.Row():
                     with gr.Column(scale=10):
                         chatbot = gr.Chatbot(
-                            label=f"LLM: {MODEL}",
+                            label=f"LLM: {model.value}",
                             height=500,
                             type="messages",
                             show_copy_button=True,
@@ -954,15 +966,6 @@ class LocalGPT:
                             outputs=status_output
                         )
 
-                with gr.Row(elem_id="model_selector_row"):
-                    models = [MODEL]
-                    gr.Dropdown(
-                        choices=models,
-                        value=models[0],
-                        interactive=True,
-                        show_label=False,
-                        container=False,
-                    )
                 with gr.Accordion("Параметры", open=False):
                     with gr.Tab(label="Параметры извлечения фрагментов из текста"):
                         k_documents = gr.Slider(
@@ -1070,6 +1073,12 @@ class LocalGPT:
                 outputs=modal
             )
 
+            model.change(
+                fn=self.update_chat_label,
+                inputs=model,
+                outputs=chatbot
+            )
+
             collection_radio.change(
                 fn=self.prompt_manager.set_current_mode,
                 inputs=collection_radio,
@@ -1107,7 +1116,7 @@ class LocalGPT:
                 queue=True,
             ).success(
                 fn=self.generate_response_stream,
-                inputs=[chatbot, collection_radio, retrieved_docs, scores, uid],
+                inputs=[model, chatbot, collection_radio, retrieved_docs, scores, uid],
                 outputs=chatbot,
                 queue=True
             )
