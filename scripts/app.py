@@ -3,6 +3,7 @@ import uuid
 import os.path
 import chromadb
 import tempfile
+import numpy as np
 import pandas as pd
 import gradio as gr
 from re import Pattern
@@ -12,6 +13,7 @@ from ollama import AsyncClient
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
+from transformers import pipeline
 from collections import defaultdict
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
@@ -164,11 +166,10 @@ class VMManager:
             }
         }
         response = requests.post(url, headers=self.headers, json=payload)
-        if response.status_code == 201:  # 201 Created
-            os.environ["OS_TOKEN"] = response.headers.get("X-Subject-Token")
-            return f"Авторизация успешна! Токен: {os.environ['OS_TOKEN']}"
-        else:
+        if response.status_code != 201:
             return f"Ошибка: {response.status_code}. Детали ответа: {response.text}"
+        os.environ["OS_TOKEN"] = response.headers.get("X-Subject-Token")
+        return f"Авторизация успешна! Токен: {os.environ['OS_TOKEN']}"
 
     def send_action(self, action: str) -> str:
         """
@@ -180,7 +181,7 @@ class VMManager:
         payload = {action: None}
         response = requests.post(f"{self.url}/action", headers=self.headers, json=payload)
 
-        if response.status_code == 200 or response.status_code == 202:
+        if response.status_code in {200, 202}:
             return f"Запрос '{action}' выполнен успешно!"
         else:
             return f"Ошибка: {response.status_code}\nДетали: {response.text}"
@@ -192,12 +193,11 @@ class VMManager:
             Error message with details if the request fails.
         """
         response = requests.get(self.url, headers=self.headers)
-        if response.status_code == 200 or response.status_code == 202:
-            json_data = response.json()['server']
-            return f"Статус: '{json_data['status']}'. Последняя дата обновления: " \
-                   f"{datetime.strptime(json_data['updated'], '%Y-%m-%dT%H:%M:%SZ') + timedelta(hours=3)}"
-        else:
+        if response.status_code not in {200, 202}:
             return f"Ошибка: {response.status_code}\nДетали: {response.text}"
+        json_data = response.json()['server']
+        return f"Статус: '{json_data['status']}'. Последняя дата обновления: " \
+               f"{datetime.strptime(json_data['updated'], '%Y-%m-%dT%H:%M:%SZ') + timedelta(hours=3)}"
 
     def control_vm(self, action: str):
         """
@@ -637,6 +637,7 @@ class DocumentManager:
 class LocalGPT:
     def __init__(self):
         self._queue: int = 0
+        self.pipeline = pipeline("automatic-speech-recognition", model=MODEL_AUDIO)
         self.document_manager: DocumentManager = DocumentManager()
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
         self.vm_manager: VMManager = VMManager()
@@ -837,6 +838,20 @@ class LocalGPT:
         logger.info(f"The question has been processed. UID - [{uid}]")
         return "", history, uid
 
+    def transcribe(self, inputs):
+        if inputs is None:
+            raise gr.Error(
+                "No audio file submitted! Please upload or record an audio file before submitting your request"
+            )
+        sr, y = inputs
+        # Convert to mono if stereo
+        if y.ndim > 1:
+            y = y.mean(axis=1)
+        y = y.astype(np.float32)
+        y /= np.max(np.abs(y))
+
+        return self.pipeline({"sampling_rate": sr, "raw": y})["text"]
+
     def launch_ui(self):
         """
         Launch the main user interface for the LocalGPT application.
@@ -903,12 +918,13 @@ class LocalGPT:
                             placeholder="👉 Напишите запрос",
                             show_label=False
                         )
+                        input_audio_microphone = gr.Audio(sources=["microphone"])
 
                 with gr.Row(elem_id="buttons"):
                     like = gr.Button(value="👍 Понравилось")
                     dislike = gr.Button(value="👎 Не понравилось")
                     stop_btn = gr.Button(value="🛑 Остановить")
-                    clear = gr.Button(value="🗑️ Очистить")
+                    gr.ClearButton(value="🗑️ Очистить", components=[chatbot, input_audio_microphone])
 
                 with gr.Row():
                     gr.Markdown(
@@ -1128,21 +1144,18 @@ class LocalGPT:
                 queue=True,
             )
 
-            # Clear history
-            clear.click(
-                fn=lambda: None,
-                inputs=None,
-                outputs=chatbot,
-                queue=False,
-                js=JS
-            )
-
             # Stop generation
             stop_btn.click(
                 fn=None,
                 inputs=None,
                 outputs=None,
                 cancels=[click_msg_event]
+            )
+
+            input_audio_microphone.stop_recording(
+                fn=self.transcribe,
+                inputs=[input_audio_microphone],
+                outputs=[msg]
             )
 
             demo.load(
