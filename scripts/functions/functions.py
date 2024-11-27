@@ -1,6 +1,4 @@
 import requests
-from __init__ import DATABASE_URL
-from sqlalchemy import create_engine, text
 
 # Функция для интеграции в LLM через tools
 tools = [
@@ -8,20 +6,16 @@ tools = [
         "type": "function",
         "function": {
             "name": "get_current_weather",
-            "description": "Get the current weather in a given latitude and longitude",
+            "description": "Get the current weather for a location",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "latitude": {
-                        "type": "number",
-                        "description": "The latitude of a place",
-                    },
-                    "longitude": {
-                        "type": "number",
-                        "description": "The longitude of a place",
-                    },
+                    "location": {
+                        "type": "string",
+                        "description": "The location to get the weather for, e.g. San Francisco, CA",
+                    }
                 },
-                "required": ["latitude", "longitude"],
+                "required": ["location"],
             },
         },
     },
@@ -51,72 +45,47 @@ tools = [
                 "required": ["operation", "number_one", "number_two"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_sql_query",
-            "description": "Generates an SQL query to retrieve data from a table with optional filtering, sorting "
-                           "and limit",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "table_name": {
-                        "type": "string",
-                        "description": "The name of the table from which to retrieve the data"
-                    },
-                    "columns": {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "description": "The list of columns to be selected from the table. If not specified, "
-                                       "all columns (*) will be selected"
-                    },
-                    "conditions": {
-                        "type": "string",
-                        "description": "Optional conditions to filter the data (e.g., 'age > 30')"
-                    },
-                    "order_by": {
-                        "type": "string",
-                        "description": "Optional ordering for the data (e.g., 'age DESC')"
-                    },
-                    "limit": {
-                        "type": "number",
-                        "description": "Optional limit on the number of rows returned"
-                    }
-                },
-                "required": ["table_name"]
-            }
-        }
     }
 ]
 
 
-def get_current_weather(latitude, longitude):
+def get_current_weather(location: str) -> str:
     """
-    Используем OpenWeatherMap API или другой API для получения текущей погоды
-    :param latitude:
-    :param longitude:
-    :return:
+    Get the current weather for a location.
+
+    Args:
+        location (str): The location to get the weather for, e.g. San Francisco, CA.
+
+    Returns:
+        str: The weather in a certain city.
+
+    Raises:
+        Exception: An error occurred due to server unavailability or incorrect parameters were passed.
     """
-    api_key = "13acbc70131b46fb940125713242410"
-    url = f"http://api.weatherapi.com/v1/current.json?key={api_key}&q={latitude},{longitude}&lang=ru"
+    api_key: str = "13acbc70131b46fb940125713242410"
+    url: str = f"http://api.weatherapi.com/v1/current.json?key={api_key}&q={location}&lang=ru"
     response = requests.get(url, timeout=60)
     if response.status_code != 200:
-        return {"error": "Unable to fetch weather data"}
-    weather_data = response.json()
+        raise Exception(response.text)
+    weather_data: dict = response.json()
     return f'На данный момент сейчас температура {weather_data["current"]["temp_c"]} градусов по Цельсию. ' \
            f'Погода - { weather_data["current"]["condition"]["text"]}. Локация - {weather_data["location"]["name"]}'
 
 
-def calculate(operation, number_one, number_two):
+def calculate(operation: str, number_one: int, number_two: int) -> str:
     """
-    Calculate digits.
-    :param operation:
-    :param number_one:
-    :param number_two:
-    :return:
+    Performs a mathematical operation (addition, subtraction, multiplication, division) on two numbers.
+
+    Args:
+        operation (str): The mathematical operation to perform. Supported operations: add, subtract, multiply, divide.
+        number_one (int): The first integer number.
+        number_two (int): The second integer number.
+
+    Returns:
+        str: An operation performed with two numbers.
+
+    Raises:
+        ValueError: An error occurred with an unknown operation.
     """
     if operation == "add":
         return f"Ответ является {number_one + number_two}"
@@ -130,76 +99,5 @@ def calculate(operation, number_one, number_two):
         raise ValueError(f"Unknown operation {operation}")
 
 
-def generate_sql_query(table_name, columns="*", conditions=None, order_by=None, limit=None):
-    """
-    Генерирует SQL-запрос для получения данных из таблицы.
-
-    :param table_name: Название таблицы, из которой нужно получить данные.
-    :param columns: Список колонок для выбора (по умолчанию все колонки '*').
-    :param conditions: Условия фильтрации в виде строки (например, 'age > 30').
-    :param order_by: Условие сортировки (например, 'age DESC').
-    :param limit: Лимит строк для выборки.
-    :return: Сгенерированный SQL-запрос в виде строки.
-    """
-    # Если передан список колонок, преобразуем его в строку
-    if isinstance(columns, list):
-        columns = ', '.join(columns)
-
-    # Начальный запрос
-    query = f"SELECT {columns} FROM {table_name}"
-
-    # Добавляем условия фильтрации, если они есть
-    if conditions:
-        query += f" WHERE {conditions}"
-
-    # Добавляем условие сортировки, если оно есть
-    if order_by:
-        query += f" ORDER BY {order_by}"
-
-    # Добавляем ограничение по количеству строк, если оно есть
-    if limit:
-        query += f" LIMIT {limit}"
-
-    return get_data_from_sql_query(query)
-
-
-def format_rows_as_string(rows, columns):
-    """
-    Форматирует данные строк и столбцов в виде строки, где сначала идут названия столбцов,
-    а затем строки данных, разделенные запятыми.
-
-    :param rows: Список строк данных.
-    :param columns: Список названий столбцов.
-    :return: Строка, представляющая данные в формате CSV.
-    """
-    # Формируем строку с названиями столбцов
-    result = ', '.join(columns) + '\n'
-
-    # Формируем строки с данными
-    for row in rows:
-        # Преобразуем каждую строку в строку, где значения разделены запятыми
-        result += ', '.join(map(str, row)) + '\n'
-
-    return result
-
-
-def get_data_from_sql_query(query):
-    """
-
-    :param query:
-    :return:
-    """
-    engine = create_engine(DATABASE_URL)
-    with engine.connect() as conn:
-        try:
-            result = conn.execute(text(query))
-            columns = list(result.keys())
-            rows = result.fetchall()
-        except Exception as ex:
-            print(ex)
-            rows = []
-    return format_rows_as_string(rows, columns)
-
-
 if __name__ == "__main__":
-    get_current_weather(45.0328, 38.9769)
+    get_current_weather("London")

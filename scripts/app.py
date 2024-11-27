@@ -720,6 +720,34 @@ class LocalGPT:
         return messages, files
 
     @staticmethod
+    def _integrate_functions(response, messages: List[dict]):
+        """
+        Integrates function calls within a chat model by generating chat completions,
+        invoking available functions based on the model's output, and returning the updated
+        chat completion generator.
+
+        :param response: Response of server ollama.
+        :param messages: A list of message dictionaries representing the conversation context.
+        :return: A generator object containing the chat completion responses after function integration.
+        """
+        available_functions: dict = {
+            "get_current_weather": get_current_weather,
+            "calculate": calculate
+        }
+
+        for tool in response["message"]["tool_calls"] or []:
+            if function_to_call := available_functions.get(tool["function"]["name"]):
+                func_result = function_to_call(**tool["function"]["arguments"])
+                logger.info(f"Function output: {func_result}")
+                messages.append({
+                    "role": "tool",
+                    "content": func_result,
+                    "tool_calls": response["message"]["tool_calls"]
+                })
+            else:
+                logger.debug(f"Function not found: {tool.function.name}")
+
+    @staticmethod
     def _add_source_references(
         history: List[dict],
         scores: List[float],
@@ -793,6 +821,13 @@ class LocalGPT:
         try:
             response = requests.get(IP_MODEL, timeout=10)
             response.raise_for_status()
+            if "llama3.1" in model:
+                response = await AsyncClient(host=IP_MODEL).chat(
+                    model=model,
+                    messages=messages,
+                    tools=tools
+                )
+                self._integrate_functions(response, messages)
             stream = await AsyncClient(host=IP_MODEL).chat(
                 model=model,
                 messages=messages,
@@ -885,6 +920,7 @@ class LocalGPT:
                             value=self.prompt_manager.mode,
                             show_label=False
                         )
+                        # is_use_tools = gr.Checkbox(label="Использовать функции")
 
                     with gr.Column():
                         model = gr.Dropdown(
