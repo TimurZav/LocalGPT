@@ -787,6 +787,7 @@ class LocalGPT:
         mode: str,
         retrieved_docs: str,
         scores: List[float],
+        is_use_tools: bool,
         uid: str
     ) -> Iterator[List[List[str]]]:
         """
@@ -803,6 +804,7 @@ class LocalGPT:
         :param mode: Operation mode, which influences the use of context in responses.
         :param retrieved_docs: Relevant documents retrieved to help answer the user query.
         :param scores: List of scores associated with retrieved documents for source filtering.
+        :param is_use_tools: A boolean indicating whether to enable tool usage (auto) or not (none).
         :param uid: Unique identifier for the current user session, useful for logging and tracking.
         :return: Yields updated conversation history after each token generated, and the final response with sources.
         """
@@ -822,7 +824,7 @@ class LocalGPT:
         try:
             response = requests.get(IP_MODEL, timeout=10)
             response.raise_for_status()
-            if "llama3.1" in model:
+            if "llama3.1" in model and is_use_tools:
                 response = await AsyncClient(host=IP_MODEL).chat(
                     model=model,
                     messages=messages,
@@ -1154,7 +1156,7 @@ class LocalGPT:
                 queue=True,
             ).success(
                 fn=self.generate_response_stream,
-                inputs=[model, chatbot, collection_radio, retrieved_docs, scores, uid],
+                inputs=[model, chatbot, collection_radio, retrieved_docs, scores, is_use_tools, uid],
                 outputs=chatbot,
                 queue=True
             )
