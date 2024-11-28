@@ -121,6 +121,18 @@ tr span {
     height: 40px;
 }
 
+.upload-button {
+    pointer-events: none;
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.enable {
+    pointer-events: auto;
+    cursor: pointer;
+    opacity: 1;
+}
+
 """
 
 
@@ -154,6 +166,18 @@ function() {
     }
     const access_token = getStorage('access_token')
     return [access_token];
+}
+"""
+
+JS_MODEL_TOGGLE: str = """
+function toggleUploadButton(model) {
+    const uploadButton = document.querySelector('.upload-button');
+    if (model.includes("llama3.2-vision")) {
+        uploadButton.classList.add('enable');
+    } else {
+        uploadButton.classList.remove('enable');
+    }
+    return [model]
 }
 """
 

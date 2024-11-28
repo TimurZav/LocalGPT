@@ -876,8 +876,10 @@ class LocalGPT:
         return "", history, uid
 
     @staticmethod
-    def update_chat_label(selected_model):
-        return gr.update(label=f"LLM: {selected_model}")
+    def update_chat_label(selected_model: str) -> tuple:
+        if "llama3.2-vision" in selected_model:
+            return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=False)
+        return gr.update(label=f"LLM: {selected_model}"), gr.update(interactive=True)
 
     def launch_ui(self):
         """
@@ -1115,8 +1117,9 @@ class LocalGPT:
 
             model.change(
                 fn=self.update_chat_label,
-                inputs=model,
-                outputs=chatbot
+                inputs=[model],
+                outputs=[chatbot, is_use_tools],
+                js=JS_MODEL_TOGGLE
             )
 
             collection_radio.change(
