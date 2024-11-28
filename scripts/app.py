@@ -923,10 +923,10 @@ class LocalGPT:
                             )
                         )
 
-                with gr.Row():
+                with gr.Row(equal_height=True):
                     with gr.Column(scale=1):
                         stream = gr.State()
-                        input_audio_microphone = gr.Audio(sources=["microphone"], streaming=True)
+                        input_audio_microphone = gr.Audio(sources=["microphone"], streaming=True, show_label=False)
                     with gr.Column(scale=10):
                         msg = gr.MultimodalTextbox(
                             label="Отправить сообщение",

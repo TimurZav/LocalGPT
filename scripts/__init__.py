@@ -122,6 +122,14 @@ tr span {
     height: 40px;
 }
 
+.icon-button-wrapper {
+    display: none;
+}
+
+.hide {
+    display: none;
+}
+
 """
 
 
