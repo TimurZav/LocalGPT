@@ -227,4 +227,5 @@ yarl==1.16.0
 zipp==3.20.2
 yake==0.4.8
 jellyfish==1.1.0
+segtok==1.5.11
 natasha==1.6.0
