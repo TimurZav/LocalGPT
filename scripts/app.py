@@ -3,6 +3,7 @@ import uuid
 import os.path
 import chromadb
 import tempfile
+import numpy as np
 import pandas as pd
 import gradio as gr
 from re import Pattern
@@ -12,6 +13,7 @@ from ollama import AsyncClient
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
+from transformers import pipeline
 from collections import defaultdict
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
@@ -635,6 +637,7 @@ class DocumentManager:
 class LocalGPT:
     def __init__(self):
         self._queue: int = 0
+        self.pipeline = pipeline("automatic-speech-recognition", model=MODEL_AUDIO)
         self.document_manager: DocumentManager = DocumentManager()
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
         self.vm_manager: VMManager = VMManager()
@@ -881,6 +884,32 @@ class LocalGPT:
             return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=False)
         return gr.update(label=f"LLM: {selected_model}"), gr.update(interactive=True)
 
+    @staticmethod
+    def add_to_stream(audio, in_stream):
+        if in_stream is None:
+            ret = audio
+        else:
+            ret = (audio[0], np.concatenate((in_stream[1], audio[1])))
+        return audio, ret
+
+    @staticmethod
+    def stop_recording():
+        return gr.Audio(value=None, streaming=True)
+
+    def transcribe(self, inputs):
+        if inputs is None:
+            raise gr.Error(
+                "No audio file submitted! Please upload or record an audio file before submitting your request"
+            )
+        sr, y = inputs
+        # Convert to mono if stereo
+        if y.ndim > 1:
+            y = y.mean(axis=1)
+        y = y.astype(np.float32)
+        y /= np.max(np.abs(y))
+
+        return self.pipeline({"sampling_rate": sr, "raw": y}), None
+
     def launch_ui(self):
         """
         Launch the main user interface for the LocalGPT application.
@@ -950,8 +979,11 @@ class LocalGPT:
                             )
                         )
 
-                with gr.Row():
-                    with gr.Column(scale=20):
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=1):
+                        stream = gr.State()
+                        input_audio_microphone = gr.Audio(sources=["microphone"], streaming=True, show_label=False)
+                    with gr.Column(scale=10):
                         msg = gr.MultimodalTextbox(
                             label="Отправить сообщение",
                             placeholder="👉 Напишите запрос",
@@ -1195,6 +1227,22 @@ class LocalGPT:
                 inputs=None,
                 outputs=None,
                 cancels=[click_msg_event]
+            )
+
+            input_audio_microphone.stop_recording(
+                fn=self.stop_recording,
+                inputs=None,
+                outputs=[input_audio_microphone]
+            ).success(
+                fn=self.transcribe,
+                inputs=[stream],
+                outputs=[msg, stream]
+            )
+
+            input_audio_microphone.stream(
+                fn=self.add_to_stream,
+                inputs=[input_audio_microphone, stream],
+                outputs=[input_audio_microphone, stream]
             )
 
             demo.load(

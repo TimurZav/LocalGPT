@@ -45,6 +45,7 @@ IP_MODEL: str = "http://localhost:11434"
 LOGIN_SERVER: str = "Test"
 PASSWORD_SERVER: str = "Test"
 MODEL: list = ["llama3.1", "llama3.2-vision:90b"]
+MODEL_AUDIO = "ElderlyDed/whisper-small-ruV4"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 
@@ -111,7 +112,6 @@ tr span {
     }
 }
 
-
 .gap.svelte-1m1obck {
     padding: 4%
 }
@@ -119,6 +119,14 @@ tr span {
 #login_btn {
     width: 250px;
     height: 40px;
+}
+
+.icon-button-wrapper {
+    display: none;
+}
+
+.hide {
+    display: none;
 }
 
 .upload-button {
