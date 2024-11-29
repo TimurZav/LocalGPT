@@ -900,7 +900,7 @@ class ModelManager:
         try:
             response = requests.get(IP_MODEL, timeout=10)
             response.raise_for_status()
-            if "llama3.1" in model and is_use_tools:
+            if "nemotron" in model and is_use_tools:
                 response = await AsyncClient(host=IP_MODEL).chat(
                     model=model,
                     messages=messages,
@@ -1008,7 +1008,6 @@ class UIManager:
                             height=500,
                             type="messages",
                             show_copy_button=True,
-                            show_share_button=True,
                             avatar_images=(
                                 AVATAR_USER,
                                 AVATAR_BOT
