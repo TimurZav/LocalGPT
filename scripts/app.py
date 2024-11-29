@@ -660,9 +660,10 @@ class AudioManager:
         """
         return gr.Audio(value=None, streaming=True)
 
-    def transcribe(self, inputs: list) -> tuple:
+    def transcribe(self, messages: dict, inputs: list) -> tuple:
         """
         Converts audio files to text.
+        :param messages:
         :param inputs: Input audio file (frequency and data array).
         :return: Decrypted text and None (data reset).
         """
@@ -676,15 +677,16 @@ class AudioManager:
             y = y.mean(axis=1)
         y = y.astype(np.float32)
         y /= np.max(np.abs(y))
+        messages["text"] = self.pipeline({"sampling_rate": sr, "raw": y})["text"]
 
-        return self.pipeline({"sampling_rate": sr, "raw": y}), None
+        return messages, None
 
 
 class MessageManager:
     def __init__(self):
         self.queue: int = 0
 
-    def add_user_message(self, message: dict, history: Optional[List]):
+    def add_user_message(self, messages: dict, history: Optional[List]):
         """
         Adds a new user message to the conversation history and generates a unique session identifier.
 
@@ -692,7 +694,7 @@ class MessageManager:
         queue counter to indicate a pending response generation. If history is not provided, a new
         conversation history is initialized.
 
-        :param message: The user's input message to be added to the conversation history.
+        :param messages: The user's input message to be added to the conversation history.
         :param history: The existing conversation history as a list of message pairs (user, bot responses).
                         Each pair is a list, with the second item initially set to None for new user messages.
         :return: A tuple containing an empty string (for response text), the updated conversation history,
@@ -702,9 +704,9 @@ class MessageManager:
         logger.info(f"Processing the question. Queue - {self.queue}. UID - [{uid}]")
         if history is None:
             history = []
-        if message["files"]:
-            history.append({"role": "user", "content": message["files"]})
-        history.append({"role": "user", "content": message["text"]})
+        if messages["files"]:
+            history.append({"role": "user", "content": messages["files"]})
+        history.append({"role": "user", "content": messages["text"]})
         self.queue += 1
         logger.info(f"The question has been processed. UID - [{uid}]")
         return "", history, uid
@@ -1271,7 +1273,7 @@ class UIManager:
                 outputs=[input_audio_microphone]
             ).success(
                 fn=self.audio_manager.transcribe,
-                inputs=[stream],
+                inputs=[msg, stream],
                 outputs=[msg, stream]
             )
 
