@@ -900,7 +900,7 @@ class ModelManager:
         try:
             response = requests.get(IP_MODEL, timeout=10)
             response.raise_for_status()
-            if "nemotron" in model and is_use_tools:
+            if model == MODELS[0] and is_use_tools:
                 response = await AsyncClient(host=IP_MODEL).chat(
                     model=model,
                     messages=messages,
@@ -942,7 +942,7 @@ class UIManager:
 
     @staticmethod
     def update_chat_label(selected_model: str) -> tuple:
-        if "llama3.2-vision" in selected_model:
+        if selected_model == MODELS[1]:
             return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=False)
         return gr.update(label=f"LLM: {selected_model}"), gr.update(interactive=True)
 
@@ -994,8 +994,8 @@ class UIManager:
 
                     with gr.Column():
                         model = gr.Dropdown(
-                            choices=MODEL,
-                            value=MODEL[0],
+                            choices=MODELS,
+                            value=MODELS[0],
                             interactive=True,
                             show_label=True,
                             label="Выбор моделей"
