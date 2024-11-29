@@ -44,8 +44,8 @@ LOADER_MAPPING: dict = {
 IP_MODEL: str = "http://localhost:11434"
 LOGIN_SERVER: str = "Test"
 PASSWORD_SERVER: str = "Test"
-MODEL: list = ["llama3.1", "llama3.2-vision:90b"]
-MODEL_AUDIO = "ElderlyDed/whisper-small-ruV4"
+MODEL: list = ["llama3.1", "llama3.2-vision"]
+MODEL_AUDIO = "openai/whisper-large-v3-turbo"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 
