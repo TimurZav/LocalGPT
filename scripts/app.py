@@ -265,7 +265,7 @@ class AuthManager:
             logger.error(f"Error during login request: {e}")
             return {"access_token": None, "is_success": False, "message": "Request failed"}
 
-    def update_user_ui_state(self, local_data: Optional[dict]):
+    def update_user_ui_state(self, local_data: Optional[dict], is_visible: bool = False):
         """
         Retrieves current user information and updates the user interface based on login status.
 
@@ -274,6 +274,7 @@ class AuthManager:
         authentication or a logged-out state, it updates the UI to reflect this accordingly.
 
         :param local_data: A dictionary with local user data, including an access token and login status.
+        :param is_visible:
         :return: A list of UI updates for interface components based on user login status.
         """
         if isinstance(local_data, dict) and local_data.get("is_success", False):
@@ -291,7 +292,7 @@ class AuthManager:
             obj_tabs.append(gr.update(value="Выйти", icon=LOGOUT_ICON))
         else:
             obj_tabs.append(gr.update(value="Войти", icon=LOGIN_ICON))
-        obj_tabs.append(gr.update(visible=not is_logged_in))
+        obj_tabs.append(gr.update(visible=is_visible))
         if isinstance(local_data, dict):
             obj_tabs.append(local_data.get("message", MESSAGE_LOGIN))
         else:
@@ -311,11 +312,11 @@ class AuthManager:
         :param login_btn: The Gradio component representing the login button.
         :return: A list of UI updates to be applied based on the user's login state.
         """
-        data = self.update_user_ui_state(local_data)
+        data = self.update_user_ui_state(local_data, is_visible=True)
         is_logged_in = isinstance(data[0], dict) and data[0].get("access_token")
 
         obj_tabs = [gr.update(visible=not is_logged_in)] + [gr.update(visible=False) for _ in range(3)]
-        obj_tabs.append(gr.update(value="Войти" if is_logged_in else login_btn))
+        obj_tabs.append(gr.update(value="Войти", icon=LOGIN_ICON if is_logged_in else login_btn))
 
         return obj_tabs
 
@@ -1177,8 +1178,9 @@ class UIManager:
                 fn=None,
                 inputs=None,
                 outputs=[local_data],
-                js="() => {removeStorage('access_token')}"
+                js="() => { removeStorage('access_token'); return null; }"
             )
+
             cancel_login.click(
                 fn=lambda: Modal(visible=False),
                 inputs=None,
