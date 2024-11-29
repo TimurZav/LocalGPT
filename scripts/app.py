@@ -8,8 +8,8 @@ import pandas as pd
 import gradio as gr
 from re import Pattern
 from __init__ import *
-from gradio_modal import Modal
 from ollama import AsyncClient
+from gradio_modal import Modal
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
@@ -63,7 +63,7 @@ class SystemPromptManager:
         :param mode: Mode.
         :return: Prompt.
         """
-        return QUERY_SYSTEM_PROMPT if mode == "DB" else LLM_SYSTEM_PROMPT
+        return QUERY_SYSTEM_PROMPT if mode == "ВНД" else LLM_SYSTEM_PROMPT
 
 
 class AnalyticsManager:
@@ -634,15 +634,80 @@ class DocumentManager:
             return gr.update(choices=[])
 
 
-class LocalGPT:
+class AudioManager:
     def __init__(self):
-        self._queue: int = 0
         self.pipeline = pipeline("automatic-speech-recognition", model=MODEL_AUDIO)
-        self.document_manager: DocumentManager = DocumentManager()
-        self.analytics_manager: AnalyticsManager = AnalyticsManager()
-        self.vm_manager: VMManager = VMManager()
-        self.auth_manager: AuthManager = AuthManager(self.document_manager)
-        self.prompt_manager: SystemPromptManager = SystemPromptManager()
+
+    @staticmethod
+    def add_to_stream(audio: list, in_stream: list) -> tuple:
+        """
+        Adds a new audio segment to the current stream.
+        :param audio: A new audio segment (frequency and data).
+        :param in_stream: The current data flow.
+        :return: Updated data stream.
+        """
+        if in_stream is None:
+            ret = audio
+        else:
+            ret = (audio[0], np.concatenate((in_stream[1], audio[1])))
+        return audio, ret
+
+    @staticmethod
+    def stop_recording() -> gr.component:
+        """
+        Stops recording and resets the current stream.
+        :return: The Gradio component.
+        """
+        return gr.Audio(value=None, streaming=True)
+
+    def transcribe(self, inputs: list) -> tuple:
+        """
+        Converts audio files to text.
+        :param inputs: Input audio file (frequency and data array).
+        :return: Decrypted text and None (data reset).
+        """
+        if inputs is None:
+            raise gr.Error(
+                "No audio file submitted! Please upload or record an audio file before submitting your request"
+            )
+        sr, y = inputs
+        # Convert to mono if stereo
+        if y.ndim > 1:
+            y = y.mean(axis=1)
+        y = y.astype(np.float32)
+        y /= np.max(np.abs(y))
+
+        return self.pipeline({"sampling_rate": sr, "raw": y}), None
+
+
+class MessageManager:
+    def __init__(self):
+        self.queue: int = 0
+
+    def add_user_message(self, message: dict, history: Optional[List]):
+        """
+        Adds a new user message to the conversation history and generates a unique session identifier.
+
+        This function appends the user's input message to the conversation history and increments the
+        queue counter to indicate a pending response generation. If history is not provided, a new
+        conversation history is initialized.
+
+        :param message: The user's input message to be added to the conversation history.
+        :param history: The existing conversation history as a list of message pairs (user, bot responses).
+                        Each pair is a list, with the second item initially set to None for new user messages.
+        :return: A tuple containing an empty string (for response text), the updated conversation history,
+                 and a unique session ID (uid).
+        """
+        uid = uuid.uuid4()
+        logger.info(f"Processing the question. Queue - {self.queue}. UID - [{uid}]")
+        if history is None:
+            history = []
+        if message["files"]:
+            history.append({"role": "user", "content": message["files"]})
+        history.append({"role": "user", "content": message["text"]})
+        self.queue += 1
+        logger.info(f"The question has been processed. UID - [{uid}]")
+        return "", history, uid
 
     @staticmethod
     def generate_completion_with_context(
@@ -723,36 +788,7 @@ class LocalGPT:
         return messages, files
 
     @staticmethod
-    def _integrate_functions(response, messages: List[dict]):
-        """
-        Integrates function calls within a chat model by generating chat completions,
-        invoking available functions based on the model's output, and returning the updated
-        chat completion generator.
-
-        :param response: Response of server ollama.
-        :param messages: A list of message dictionaries representing the conversation context.
-        :return: A generator object containing the chat completion responses after function integration.
-        """
-        available_functions: dict = {
-            "get_current_weather": get_current_weather,
-            "calculate": calculate
-        }
-
-        for tool in response["message"]["tool_calls"] or []:
-            if function_to_call := available_functions.get(tool["function"]["name"]):
-                func_result = function_to_call(**tool["function"]["arguments"])
-                logger.info(f"Function output: {func_result}")
-                if func_result:
-                    messages.append({
-                        "role": "tool",
-                        "content": func_result,
-                        "tool_calls": response["message"]["tool_calls"]
-                    })
-            else:
-                logger.debug(f"Function not found: {tool['function']['name']}")
-
-    @staticmethod
-    def _add_source_references(
+    def add_source_references(
         history: List[dict],
         scores: List[float],
         files: List[str],
@@ -782,6 +818,41 @@ class LocalGPT:
                 partial_text += sources_text[0]
             history[-1]["content"] += partial_text
         return history
+
+
+class ModelManager:
+    def __init__(self, message_manager, prompt_manager, analytics_manager):
+        self.message_manager: MessageManager = message_manager
+        self.prompt_manager: SystemPromptManager = prompt_manager
+        self.analytics_manager: AnalyticsManager = analytics_manager
+
+    @staticmethod
+    def _integrate_functions(response, messages: List[dict]):
+        """
+        Integrates function calls within a chat model by generating chat completions,
+        invoking available functions based on the model's output, and returning the updated
+        chat completion generator.
+
+        :param response: Response of server ollama.
+        :param messages: A list of message dictionaries representing the conversation context.
+        :return: A generator object containing the chat completion responses after function integration.
+        """
+        for tool in response["message"].get("tool_calls") or []:
+            available_functions: dict = {
+                "get_current_weather": get_current_weather,
+                "calculate": calculate
+            }
+            if function_to_call := available_functions.get(tool["function"]["name"]):
+                func_result = function_to_call(**tool["function"]["arguments"])
+                logger.info(f"Function output: {func_result}")
+                if func_result:
+                    messages.append({
+                        "role": "tool",
+                        "content": func_result,
+                        "tool_calls": response["message"]["tool_calls"]
+                    })
+            else:
+                logger.debug(f"Function not found: {tool['function']['name']}")
 
     async def generate_response_stream(
         self,
@@ -818,12 +889,14 @@ class LocalGPT:
 
         partial_text = ""
         logger.info(f"Beginning response generation [uid - {uid}]")
-        messages, files = self.generate_completion_with_context(
+        system_prompt = [{"role": "system", "content": self.prompt_manager.system_prompt}]
+        messages, files = self.message_manager.generate_completion_with_context(
             history=history,
             retrieved_docs=retrieved_docs,
             mode=mode,
             uid=uid
         )
+        messages = system_prompt + messages
         try:
             response = requests.get(IP_MODEL, timeout=10)
             response.raise_for_status()
@@ -849,66 +922,29 @@ class LocalGPT:
             yield history
 
         logger.info(f"Response generation completed [uid - {uid}]")
-        yield self._add_source_references(history, scores, files, partial_text)
-        self._queue -= 1
+        yield self.message_manager.add_source_references(history, scores, files, partial_text)
+        self.message_manager.queue -= 1
         _ = self.analytics_manager.update_message_analytics(history)
 
-    def add_user_message(self, message: dict, history: Optional[List]):
-        """
-        Adds a new user message to the conversation history and generates a unique session identifier.
 
-        This function appends the user's input message to the conversation history and increments the
-        queue counter to indicate a pending response generation. If history is not provided, a new
-        conversation history is initialized.
-
-        :param message: The user's input message to be added to the conversation history.
-        :param history: The existing conversation history as a list of message pairs (user, bot responses).
-                        Each pair is a list, with the second item initially set to None for new user messages.
-        :return: A tuple containing an empty string (for response text), the updated conversation history,
-                 and a unique session ID (uid).
-        """
-        uid = uuid.uuid4()
-        logger.info(f"Processing the question. Queue - {self._queue}. UID - [{uid}]")
-        if history is None:
-            history = []
-        if message["files"]:
-            history.append({"role": "user", "content": message["files"]})
-        history.append({"role": "user", "content": message["text"]})
-        self._queue += 1
-        logger.info(f"The question has been processed. UID - [{uid}]")
-        return "", history, uid
+class UIManager:
+    def __init__(self):
+        self.message_manager: MessageManager = MessageManager()
+        self.prompt_manager: SystemPromptManager = SystemPromptManager()
+        self.analytics_manager: AnalyticsManager = AnalyticsManager()
+        self.model_manager: ModelManager = ModelManager(
+            self.message_manager, self.prompt_manager, self.analytics_manager
+        )
+        self.audio_manager: AudioManager = AudioManager()
+        self.document_manager: DocumentManager = DocumentManager()
+        self.vm_manager: VMManager = VMManager()
+        self.auth_manager: AuthManager = AuthManager(self.document_manager)
 
     @staticmethod
     def update_chat_label(selected_model: str) -> tuple:
         if "llama3.2-vision" in selected_model:
             return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=False)
         return gr.update(label=f"LLM: {selected_model}"), gr.update(interactive=True)
-
-    @staticmethod
-    def add_to_stream(audio, in_stream):
-        if in_stream is None:
-            ret = audio
-        else:
-            ret = (audio[0], np.concatenate((in_stream[1], audio[1])))
-        return audio, ret
-
-    @staticmethod
-    def stop_recording():
-        return gr.Audio(value=None, streaming=True)
-
-    def transcribe(self, inputs):
-        if inputs is None:
-            raise gr.Error(
-                "No audio file submitted! Please upload or record an audio file before submitting your request"
-            )
-        sr, y = inputs
-        # Convert to mono if stereo
-        if y.ndim > 1:
-            y = y.mean(axis=1)
-        y = y.astype(np.float32)
-        y /= np.max(np.abs(y))
-
-        return self.pipeline({"sampling_rate": sr, "raw": y}), None
 
     def launch_ui(self):
         """
@@ -980,15 +1016,16 @@ class LocalGPT:
                         )
 
                 with gr.Row(equal_height=True):
-                    with gr.Column(scale=1):
-                        stream = gr.State()
-                        input_audio_microphone = gr.Audio(sources=["microphone"], streaming=True, show_label=False)
                     with gr.Column(scale=10):
                         msg = gr.MultimodalTextbox(
                             label="Отправить сообщение",
                             placeholder="👉 Напишите запрос",
                             show_label=False
                         )
+
+                    with gr.Column(scale=1):
+                        stream = gr.State()
+                        input_audio_microphone = gr.Audio(sources=["microphone"], streaming=True, show_label=False)
 
                 with gr.Row(elem_id="buttons"):
                     like = gr.Button(value="👍 Понравилось")
@@ -1180,7 +1217,7 @@ class LocalGPT:
 
             # Pressing Enter
             click_msg_event = msg.submit(
-                fn=self.add_user_message,
+                fn=self.message_manager.add_user_message,
                 inputs=[msg, chatbot],
                 outputs=[msg, chatbot, uid],
                 queue=False,
@@ -1190,7 +1227,7 @@ class LocalGPT:
                 outputs=[retrieved_docs, scores],
                 queue=True,
             ).success(
-                fn=self.generate_response_stream,
+                fn=self.model_manager.generate_response_stream,
                 inputs=[model, chatbot, collection_radio, retrieved_docs, scores, is_use_tools, uid],
                 outputs=chatbot,
                 queue=True
@@ -1230,17 +1267,17 @@ class LocalGPT:
             )
 
             input_audio_microphone.stop_recording(
-                fn=self.stop_recording,
+                fn=self.audio_manager.stop_recording,
                 inputs=None,
                 outputs=[input_audio_microphone]
             ).success(
-                fn=self.transcribe,
+                fn=self.audio_manager.transcribe,
                 inputs=[stream],
                 outputs=[msg, stream]
             )
 
             input_audio_microphone.stream(
-                fn=self.add_to_stream,
+                fn=self.audio_manager.add_to_stream,
                 inputs=[input_audio_microphone, stream],
                 outputs=[input_audio_microphone, stream]
             )
