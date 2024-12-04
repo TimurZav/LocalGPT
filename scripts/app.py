@@ -7,7 +7,11 @@ import numpy as np
 import pandas as pd
 import gradio as gr
 from re import Pattern
+
+from huggingface_hub.file_download import http_get
+
 from __init__ import *
+from langchain import hub
 from ollama import AsyncClient
 from gradio_modal import Modal
 from tinydb import TinyDB, where
@@ -15,16 +19,21 @@ from yake import KeywordExtractor
 from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
+from langchain_openai import ChatOpenAI
+from langchain_community.chat_models import ChatLlamaCpp
+from langchain_ollama import ChatOllama
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
 from typing import List, Optional, Tuple, Iterator
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.agents import create_react_agent, AgentExecutor, create_tool_calling_agent
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OPENAI_API_KEY"] = ""
 logger: logging.getLogger = get_logger(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
 
 
@@ -793,6 +802,7 @@ class MessageManager:
     @staticmethod
     def add_source_references(
         history: List[dict],
+        response: dict,
         scores: List[float],
         files: List[str],
         partial_text: str,
@@ -805,6 +815,7 @@ class MessageManager:
         threshold conditions. The updated text is appended to the most recent assistant message
         in the conversation history.
         :param history: List representing conversation history as pairs of user and assistant messages.
+        :param response:
         :param scores: List of floats representing confidence scores associated with each file, determining if
                        file sources should be appended.
         :param files: List of file names or identifiers to include as sources in the response.
@@ -820,14 +831,62 @@ class MessageManager:
             elif scores:
                 partial_text += sources_text[0]
             history[-1]["content"] += partial_text
+        elif response["intermediate_steps"]:
+            partial_text += "\n\n Ссылки на источники: \n"
+            sources_text = {
+                source['url'] for sources in response["intermediate_steps"] for source in sources[1]
+            }
+            partial_text += "\n\n\n".join(sources_text)
+            history[-1]["content"] += partial_text
         return history
 
 
 class ModelManager:
     def __init__(self, message_manager, prompt_manager, analytics_manager):
+        self.agent_executor = self.load_or_initialize_model()
         self.message_manager: MessageManager = message_manager
         self.prompt_manager: SystemPromptManager = prompt_manager
         self.analytics_manager: AnalyticsManager = analytics_manager
+
+    @staticmethod
+    def load_or_initialize_model():
+        """
+        Loads and initializes the Llama model from a specified repository.
+
+        This method creates necessary directories for model storage if they do not
+        already exist. It checks if the model file is present; if not, it downloads
+        the model from the specified repository. Finally, it initializes and returns
+        a Llama model instance with the specified configuration.
+
+        :return: An instance of the Llama model initialized with the specified parameters.
+        """
+        model = "Meta-Llama-3.1-8B-Instruct-IQ4_NL.gguf"
+        path = f"{MODELS_DIR}/{model}"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not os.path.exists(path):
+            with open(path, "wb") as f:
+                http_get(
+                    f"https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/"
+                    f"{model}",
+                    f
+                )
+
+        prompt = hub.pull("hwchase17/react")
+        # llm = ChatLlamaCpp(model_path=path, n_ctx=4000)
+        llm = ChatOllama(model=MODELS[0])
+        # from langgraph.prebuilt import create_react_agent
+        agent = create_react_agent(llm, tools, prompt)
+
+        return AgentExecutor(
+            agent=agent,
+            tools=tools,
+            verbose=True,
+            handle_parsing_errors=True,
+            return_intermediate_steps=True,
+            max_iterations=1,
+            early_stopping_method="generate",
+            max_execution_time=1200
+        )
 
     @staticmethod
     def _integrate_functions(response, messages: List[dict]):
@@ -910,22 +969,15 @@ class ModelManager:
                     tools=tools
                 )
                 self._integrate_functions(response, messages)
-            stream = await AsyncClient(host=IP_MODEL).chat(
-                model=model,
-                messages=messages,
-                stream=True,
-            )
         except (requests.exceptions.ConnectTimeout, requests.exceptions.HTTPError) as ex:
             raise Exception(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}") from ex
         history.append({"role": "assistant", "content": None})
-        buffer = ""
-        async for chunk in stream:
-            buffer += chunk['message']['content']
-            history[-1]["content"] = buffer
-            yield history
+        response = self.agent_executor.invoke({"input": messages[-1]["content"]})
+        history[-1]["content"] = response["output"]
+        yield history
 
         logger.info(f"Response generation completed [uid - {uid}]")
-        yield self.message_manager.add_source_references(history, scores, files, partial_text)
+        yield self.message_manager.add_source_references(history, response, scores, files, partial_text)
         self.message_manager.queue -= 1
         _ = self.analytics_manager.update_message_analytics(history)
 
