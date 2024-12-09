@@ -1,7 +1,12 @@
+import os
 import logging
 import requests
+from langchain_community.tools import TavilySearchResults
 
 # Функция для интеграции в LLM через tools
+os.environ["TAVILY_API_KEY"] = "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"
+web_search_tool = TavilySearchResults(max_results=3)
+
 tools = [
     {
         "type": "function",

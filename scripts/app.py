@@ -3,25 +3,30 @@ import uuid
 import os.path
 import chromadb
 import tempfile
+import operator
 import numpy as np
 import pandas as pd
 import gradio as gr
 from re import Pattern
 from __init__ import *
-from ollama import AsyncClient
+# from ollama import AsyncClient
 from gradio_modal import Modal
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
+from typing import TypedDict, Annotated
+from langchain_ollama import ChatOllama
 from datetime import datetime, timedelta
+from langgraph.graph import StateGraph, END
 from langchain.docstore.document import Document
 from typing import List, Optional, Tuple, Iterator
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
+from langchain_core.messages import AnyMessage, SystemMessage, ToolMessage, HumanMessage, AIMessage
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -751,41 +756,34 @@ class MessageManager:
                 continue
 
             if message["role"] == "user" and isinstance(message["content"], tuple):
-                temp_history.append({
-                    "role": "user",
-                    "content": temp_history[-1]["content"],
-                    "images": [message["content"][0]]
-                })
+                temp_history.append(HumanMessage(
+                    content=temp_history[-1]["content"]
+                ))
             elif message["role"] == "user":
-                temp_history.append({
-                    "role": "user",
-                    "content": message["content"]
-                })
+                temp_history.append(HumanMessage(
+                    content=message["content"]
+                ))
             elif message["role"] == "assistant":
                 pair_count += 1
-                temp_history.append({
-                    "role": "assistant",
-                    "content": message["content"]
-                })
+                temp_history.append(AIMessage(
+                    content=message["content"]
+                ))
 
             if pair_count == 3:
                 break
 
-        dialog_history: List[dict] = list(reversed(temp_history))
+        dialog_history: list = list(reversed(temp_history))
         messages = [
             *dialog_history
         ]
         if len(history) > 1 and isinstance(history[-2].get("content"), tuple):
-            messages.append({
-                "role": "user",
-                "content": last_user_message,
-                "images": [history[-2].get("content")[0]]
-            })
+            messages.append(HumanMessage(
+                content=last_user_message
+            ))
         else:
-            messages.append({
-                "role": "user",
-                "content": last_user_message
-            })
+            messages.append(HumanMessage(
+                content=last_user_message
+            ))
 
         logger.info(f"The question has been fully formed [uid - {uid}]")
         return messages, files
@@ -823,11 +821,57 @@ class MessageManager:
         return history
 
 
+class AgentState(TypedDict):
+    messages: Annotated[list[AnyMessage], operator.add]
+
+
+class EnhancedAgent:
+    def __init__(self, model, tools, system=""):
+        self.system = system
+
+        graph = StateGraph(AgentState)
+        graph.add_node("llm", self.call_llm)
+        graph.add_node("action", self.take_action)
+        graph.add_conditional_edges("llm", self.exists_action, {True: "action", False: END})
+        graph.add_edge("action", "llm")
+        graph.set_entry_point("llm")
+        self.graph = graph.compile()
+
+        self.tools = {t.name: t for t in tools}
+        self.model = model.bind_tools(tools)
+
+    def call_llm(self, state: AgentState):
+        messages = state['messages']
+        message = self.model.invoke(messages)
+
+        if self.detect_hallucinations(message):
+            return {"messages": [message, SystemMessage(content="Ответ требует проверки.")]}
+        return {"messages": [message]}
+
+    @staticmethod
+    def detect_hallucinations(message):
+        return "я не уверен" in message.content or "возможно" in message.content
+
+    def take_action(self, state: AgentState):
+        tool_calls = state['messages'][-1].tool_calls
+        results = []
+        for t in tool_calls:
+            result = self.tools[t['name']].invoke(t['args'])
+            results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
+        return {'messages': results}
+
+    @staticmethod
+    def exists_action(state: AgentState):
+        result = state['messages'][-1]
+        return len(result.tool_calls) > 0
+
+
 class ModelManager:
-    def __init__(self, message_manager, prompt_manager, analytics_manager):
-        self.message_manager: MessageManager = message_manager
+    def __init__(self, prompt_manager, message_manager, analytics_manager):
         self.prompt_manager: SystemPromptManager = prompt_manager
+        self.message_manager: MessageManager = message_manager
         self.analytics_manager: AnalyticsManager = analytics_manager
+        self.agent = EnhancedAgent(ChatOllama(model=MODELS[0]), [web_search_tool], system=LLM_SYSTEM_PROMPT)
 
     @staticmethod
     def _integrate_functions(response, messages: List[dict]):
@@ -892,7 +936,7 @@ class ModelManager:
 
         partial_text = ""
         logger.info(f"Beginning response generation [uid - {uid}]")
-        system_prompt = [{"role": "system", "content": self.prompt_manager.system_prompt}]
+        system_prompt = [SystemMessage(content=self.prompt_manager.system_prompt)]
         messages, files = self.message_manager.generate_completion_with_context(
             history=history,
             retrieved_docs=retrieved_docs,
@@ -900,29 +944,35 @@ class ModelManager:
             uid=uid
         )
         messages = system_prompt + messages
-        try:
-            response = requests.get(IP_MODEL, timeout=10)
-            response.raise_for_status()
-            if model == MODELS[0] and is_use_tools:
-                response = await AsyncClient(host=IP_MODEL).chat(
-                    model=model,
-                    messages=messages,
-                    tools=tools
-                )
-                self._integrate_functions(response, messages)
-            stream = await AsyncClient(host=IP_MODEL).chat(
-                model=model,
-                messages=messages,
-                stream=True,
-            )
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.HTTPError) as ex:
-            raise Exception(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}") from ex
+        # try:
+        #     response = requests.get(IP_MODEL, timeout=10)
+        #     response.raise_for_status()
+        #     if model == MODELS[0] and is_use_tools:
+        #         response = await AsyncClient(host=IP_MODEL).chat(
+        #             model=model,
+        #             messages=messages,
+        #             tools=tools
+        #         )
+        #         self._integrate_functions(response, messages)
+        #     stream = await AsyncClient(host=IP_MODEL).chat(
+        #         model=model,
+        #         messages=messages,
+        #         stream=True,
+        #     )
+        # except (requests.exceptions.ConnectTimeout, requests.exceptions.HTTPError) as ex:
+        #     raise Exception(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}") from ex
+        # history.append({"role": "assistant", "content": None})
+        # buffer = ""
+        # async for chunk in stream:
+        #     buffer += chunk['message']['content']
+        #     history[-1]["content"] = buffer
+        #     yield history
+
         history.append({"role": "assistant", "content": None})
-        buffer = ""
-        async for chunk in stream:
-            buffer += chunk['message']['content']
-            history[-1]["content"] = buffer
-            yield history
+        result = self.agent.graph.invoke({'messages': messages})
+        print(result['messages'][-1].content)
+        history[-1]["content"] = result['messages'][-1].content
+        yield history
 
         logger.info(f"Response generation completed [uid - {uid}]")
         yield self.message_manager.add_source_references(history, scores, files, partial_text)
@@ -935,13 +985,13 @@ class UIManager:
         self.message_manager: MessageManager = MessageManager()
         self.prompt_manager: SystemPromptManager = SystemPromptManager()
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
-        self.model_manager: ModelManager = ModelManager(
-            self.message_manager, self.prompt_manager, self.analytics_manager
-        )
         self.audio_manager: AudioManager = AudioManager()
         self.document_manager: DocumentManager = DocumentManager()
         self.vm_manager: VMManager = VMManager()
         self.auth_manager: AuthManager = AuthManager(self.document_manager)
+        self.model_manager: ModelManager = ModelManager(
+            self.prompt_manager, self.message_manager, self.analytics_manager
+        )
 
     @staticmethod
     def update_chat_label(selected_model: str) -> tuple:
