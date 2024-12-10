@@ -811,7 +811,6 @@ class MessageManager:
 
 
 class AgentState(TypedDict):
-    message: HumanMessage
     messages: Annotated[list[AnyMessage], operator.add]
     response_without_tools: AIMessage
     response_with_tools: AIMessage
@@ -850,7 +849,7 @@ class Agent:
         """
         query = state['messages']
         response = self.model.invoke(query)
-        return {'messages': [response], 'response_without_tools': response}
+        return {'response_without_tools': response}
 
     def call_llm_with_tools(self, state: AgentState):
         """
@@ -858,20 +857,16 @@ class Agent:
         """
         query = state['messages']
         model_with_tools = self.model.bind_tools(tools)
-        if query[-1].type == "ai":
-            del query[-1]
         if query[-1].type == "human":
             query[-1] = HumanMessage(content=query[-1].content.split("ответь на вопрос: ")[-1])
-        elif query[-3].type == "human":
-            query[-3] = HumanMessage(content=query[-3].content.split("ответь на вопрос: ")[-1])
         response = model_with_tools.invoke(query)
-        return {'messages': [response], 'response_with_tools': response}
+        return {'response_with_tools': response}
 
     def take_action(self, state: AgentState):
         """
         Выполнение инструментов, если они указаны в запросе.
         """
-        tool_calls = state['messages'][-1].tool_calls
+        tool_calls = state['response_with_tools'].tool_calls
         result = []
         results = []
         for t in tool_calls:
@@ -884,21 +879,21 @@ class Agent:
         """
         Проверяет, есть ли инструменты для выполнения.
         """
-        tool_calls = state['messages'][-1].tool_calls
+        tool_calls = state['response_with_tools'].tool_calls
         return bool(tool_calls)
 
     def generate_final_response(self, state: AgentState):
         """
         Генерирует итоговый ответ на основе двух предыдущих.
         """
-        message = state.get('message')
-        response_without_tools = state.get('response_without_tools', "")
-        response_with_tools = state.get('response_with_tools', "")
+        messages = state.get('messages')
+        response_without_tools = state.get('response_without_tools')
+        response_with_tools = state.get('response_with_tools')
 
         # Формируем запрос для модели
         prompt = f"Сравни и объедини следующие ответы:\n\n" \
                  f"1. {response_without_tools.content}\n\n2. {response_with_tools.content}\n\nВыдай финальный вывод:"
-        final_response = self.model.invoke([message, prompt])
+        final_response = self.model.invoke(messages + [HumanMessage(content=prompt)])
 
         return {
             'messages': state['messages'] + [final_response],
@@ -986,7 +981,7 @@ class ModelManager:
         messages = system_prompt + messages
 
         history.append({"role": "assistant", "content": None})
-        result = self.agent.graph.invoke({'message': messages[-1], 'messages': messages})
+        result = self.agent.graph.invoke({'messages': messages})
         print(result['messages'][-1].content)
         history[-1]["content"] = result['messages'][-1].content
         yield history
