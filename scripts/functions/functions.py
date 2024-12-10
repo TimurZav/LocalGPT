@@ -5,54 +5,54 @@ from langchain_community.tools import TavilySearchResults
 
 # Функция для интеграции в LLM через tools
 os.environ["TAVILY_API_KEY"] = "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"
-web_search_tool = TavilySearchResults(max_results=3)
+tools = [TavilySearchResults(max_results=5)]
 
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_current_weather",
-            "description": "Get the current weather for a location",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": "The location to get the weather for, e.g. San Francisco, CA",
-                    }
-                },
-                "required": ["location"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate",
-            "description": "Performs a mathematical operation (addition, subtraction, multiplication, division) "
-                           "on two numbers",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "operation": {
-                        "type": "string",
-                        "description": "The mathematical operation to perform. "
-                                       "Supported operations: add, subtract, multiply, divide",
-                    },
-                    "number_one": {
-                        "type": "number",
-                        "description": "The first number for the operation",
-                    },
-                    "number_two": {
-                        "type": "number",
-                        "description": "The second number for the operation",
-                    },
-                },
-                "required": ["operation", "number_one", "number_two"],
-            },
-        },
-    }
-]
+# tools = [
+#     {
+#         "type": "function",
+#         "function": {
+#             "name": "get_current_weather",
+#             "description": "Get the current weather for a location",
+#             "parameters": {
+#                 "type": "object",
+#                 "properties": {
+#                     "location": {
+#                         "type": "string",
+#                         "description": "The location to get the weather for, e.g. San Francisco, CA",
+#                     }
+#                 },
+#                 "required": ["location"],
+#             },
+#         },
+#     },
+#     {
+#         "type": "function",
+#         "function": {
+#             "name": "calculate",
+#             "description": "Performs a mathematical operation (addition, subtraction, multiplication, division) "
+#                            "on two numbers",
+#             "parameters": {
+#                 "type": "object",
+#                 "properties": {
+#                     "operation": {
+#                         "type": "string",
+#                         "description": "The mathematical operation to perform. "
+#                                        "Supported operations: add, subtract, multiply, divide",
+#                     },
+#                     "number_one": {
+#                         "type": "number",
+#                         "description": "The first number for the operation",
+#                     },
+#                     "number_two": {
+#                         "type": "number",
+#                         "description": "The second number for the operation",
+#                     },
+#                 },
+#                 "required": ["operation", "number_one", "number_two"],
+#             },
+#         },
+#     }
+# ]
 
 
 def get_current_weather(location: str) -> str:

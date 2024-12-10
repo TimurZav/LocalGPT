@@ -9,17 +9,16 @@ import pandas as pd
 import gradio as gr
 from re import Pattern
 from __init__ import *
-# from ollama import AsyncClient
 from gradio_modal import Modal
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
+from langgraph.graph import StateGraph
 from typing import TypedDict, Annotated
 from langchain_ollama import ChatOllama
 from datetime import datetime, timedelta
-from langgraph.graph import StateGraph, END
 from langchain.docstore.document import Document
 from typing import List, Optional, Tuple, Iterator
 from langchain_community.vectorstores import Chroma
@@ -756,18 +755,12 @@ class MessageManager:
                 continue
 
             if message["role"] == "user" and isinstance(message["content"], tuple):
-                temp_history.append(HumanMessage(
-                    content=temp_history[-1]["content"]
-                ))
+                temp_history.append(HumanMessage(content=temp_history[-1]["content"]))
             elif message["role"] == "user":
-                temp_history.append(HumanMessage(
-                    content=message["content"]
-                ))
+                temp_history.append(HumanMessage(content=message["content"]))
             elif message["role"] == "assistant":
                 pair_count += 1
-                temp_history.append(AIMessage(
-                    content=message["content"]
-                ))
+                temp_history.append(AIMessage(content=message["content"]))
 
             if pair_count == 3:
                 break
@@ -777,13 +770,9 @@ class MessageManager:
             *dialog_history
         ]
         if len(history) > 1 and isinstance(history[-2].get("content"), tuple):
-            messages.append(HumanMessage(
-                content=last_user_message
-            ))
+            messages.append(HumanMessage(content=last_user_message))
         else:
-            messages.append(HumanMessage(
-                content=last_user_message
-            ))
+            messages.append(HumanMessage(content=last_user_message))
 
         logger.info(f"The question has been fully formed [uid - {uid}]")
         return messages, files
@@ -822,48 +811,99 @@ class MessageManager:
 
 
 class AgentState(TypedDict):
+    message: HumanMessage
     messages: Annotated[list[AnyMessage], operator.add]
+    response_without_tools: AIMessage
+    response_with_tools: AIMessage
+    final_response: AIMessage
+    tool_results: list
 
 
-class EnhancedAgent:
-    def __init__(self, model, tools, system=""):
-        self.system = system
-
+class Agent:
+    def __init__(self, model):
+        # Инициализация графа состояний
         graph = StateGraph(AgentState)
-        graph.add_node("llm", self.call_llm)
-        graph.add_node("action", self.take_action)
-        graph.add_conditional_edges("llm", self.exists_action, {True: "action", False: END})
-        graph.add_edge("action", "llm")
-        graph.set_entry_point("llm")
+        graph.add_node("llm_without_tools", self.call_llm_without_tools)  # Первый вызов LLM
+        graph.add_node("llm_with_tools", self.call_llm_with_tools)  # Второй вызов LLM
+        graph.add_node("action", self.take_action)  # Выполнение инструментов
+        graph.add_node("generate_final", self.generate_final_response)  # Сравнение ответов
+
+        # Упрощённые связи между узлами
+        graph.add_edge("llm_without_tools", "llm_with_tools")  # Сразу переходим ко второму вызову LLM
+        graph.add_conditional_edges(
+            "llm_with_tools",
+            self.exists_action,
+            {True: "action", False: "generate_final"}  # Проверка на инструменты только после llm_final
+        )
+        graph.add_edge("action", "llm_with_tools")  # Повторный вызов LLM после выполнения инструментов
+
+        graph.set_entry_point("llm_without_tools")  # Точка входа в граф
         self.graph = graph.compile()
 
+        # Инициализация инструментов
         self.tools = {t.name: t for t in tools}
-        self.model = model.bind_tools(tools)
+        self.model = model
 
-    def call_llm(self, state: AgentState):
-        messages = state['messages']
-        message = self.model.invoke(messages)
+    def call_llm_without_tools(self, state: AgentState):
+        """
+        Первый вызов LLM без инструментов.
+        """
+        query = state['messages']
+        response = self.model.invoke(query)
+        return {'messages': [response], 'response_without_tools': response}
 
-        if self.detect_hallucinations(message):
-            return {"messages": [message, SystemMessage(content="Ответ требует проверки.")]}
-        return {"messages": [message]}
-
-    @staticmethod
-    def detect_hallucinations(message):
-        return "я не уверен" in message.content or "возможно" in message.content
+    def call_llm_with_tools(self, state: AgentState):
+        """
+        Второй вызов LLM после выполнения инструментов.
+        """
+        query = state['messages']
+        model_with_tools = self.model.bind_tools(tools)
+        if query[-1].type == "ai":
+            del query[-1]
+        if query[-1].type == "human":
+            query[-1] = HumanMessage(content=query[-1].content.split("ответь на вопрос: ")[-1])
+        elif query[-3].type == "human":
+            query[-3] = HumanMessage(content=query[-3].content.split("ответь на вопрос: ")[-1])
+        response = model_with_tools.invoke(query)
+        return {'messages': [response], 'response_with_tools': response}
 
     def take_action(self, state: AgentState):
+        """
+        Выполнение инструментов, если они указаны в запросе.
+        """
         tool_calls = state['messages'][-1].tool_calls
+        result = []
         results = []
         for t in tool_calls:
             result = self.tools[t['name']].invoke(t['args'])
             results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
-        return {'messages': results}
+        return {'messages': results, 'tool_results': result}
 
     @staticmethod
     def exists_action(state: AgentState):
-        result = state['messages'][-1]
-        return len(result.tool_calls) > 0
+        """
+        Проверяет, есть ли инструменты для выполнения.
+        """
+        tool_calls = state['messages'][-1].tool_calls
+        return bool(tool_calls)
+
+    def generate_final_response(self, state: AgentState):
+        """
+        Генерирует итоговый ответ на основе двух предыдущих.
+        """
+        message = state.get('message')
+        response_without_tools = state.get('response_without_tools', "")
+        response_with_tools = state.get('response_with_tools', "")
+
+        # Формируем запрос для модели
+        prompt = f"Сравни и объедини следующие ответы:\n\n" \
+                 f"1. {response_without_tools.content}\n\n2. {response_with_tools.content}\n\nВыдай финальный вывод:"
+        final_response = self.model.invoke([message, prompt])
+
+        return {
+            'messages': state['messages'] + [final_response],
+            'final_response': final_response
+        }
 
 
 class ModelManager:
@@ -871,7 +911,7 @@ class ModelManager:
         self.prompt_manager: SystemPromptManager = prompt_manager
         self.message_manager: MessageManager = message_manager
         self.analytics_manager: AnalyticsManager = analytics_manager
-        self.agent = EnhancedAgent(ChatOllama(model=MODELS[0]), [web_search_tool], system=LLM_SYSTEM_PROMPT)
+        self.agent = Agent(ChatOllama(model=MODELS[0]))
 
     @staticmethod
     def _integrate_functions(response, messages: List[dict]):
@@ -944,32 +984,9 @@ class ModelManager:
             uid=uid
         )
         messages = system_prompt + messages
-        # try:
-        #     response = requests.get(IP_MODEL, timeout=10)
-        #     response.raise_for_status()
-        #     if model == MODELS[0] and is_use_tools:
-        #         response = await AsyncClient(host=IP_MODEL).chat(
-        #             model=model,
-        #             messages=messages,
-        #             tools=tools
-        #         )
-        #         self._integrate_functions(response, messages)
-        #     stream = await AsyncClient(host=IP_MODEL).chat(
-        #         model=model,
-        #         messages=messages,
-        #         stream=True,
-        #     )
-        # except (requests.exceptions.ConnectTimeout, requests.exceptions.HTTPError) as ex:
-        #     raise Exception(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}") from ex
-        # history.append({"role": "assistant", "content": None})
-        # buffer = ""
-        # async for chunk in stream:
-        #     buffer += chunk['message']['content']
-        #     history[-1]["content"] = buffer
-        #     yield history
 
         history.append({"role": "assistant", "content": None})
-        result = self.agent.graph.invoke({'messages': messages})
+        result = self.agent.graph.invoke({'message': messages[-1], 'messages': messages})
         print(result['messages'][-1].content)
         history[-1]["content"] = result['messages'][-1].content
         yield history
