@@ -265,7 +265,7 @@ class AuthManager:
             logger.error(f"Error during login request: {e}")
             return {"access_token": None, "is_success": False, "message": "Request failed"}
 
-    def update_user_ui_state(self, local_data: Optional[dict], is_visible: bool = False):
+    def update_user_ui_state(self, local_data: Optional[dict], is_visible: bool = True):
         """
         Retrieves current user information and updates the user interface based on login status.
 
@@ -284,6 +284,7 @@ class AuthManager:
             )
             logger.info(f"User is {response.json().get('username')}")
             is_logged_in = response.status_code == 200
+            is_visible = False
         else:
             is_logged_in = False
 
@@ -312,7 +313,7 @@ class AuthManager:
         :param login_btn: The Gradio component representing the login button.
         :return: A list of UI updates to be applied based on the user's login state.
         """
-        data = self.update_user_ui_state(local_data, is_visible=True)
+        data = self.update_user_ui_state(local_data)
         is_logged_in = isinstance(data[0], dict) and data[0].get("access_token")
 
         obj_tabs = [gr.update(visible=not is_logged_in)] + [gr.update(visible=False) for _ in range(3)]
@@ -903,7 +904,7 @@ class ModelManager:
         try:
             response = requests.get(IP_MODEL, timeout=10)
             response.raise_for_status()
-            if model == MODELS[0] and is_use_tools:
+            if is_use_tools:
                 response = await AsyncClient(host=IP_MODEL).chat(
                     model=model,
                     messages=messages,
@@ -915,7 +916,11 @@ class ModelManager:
                 messages=messages,
                 stream=True,
             )
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.HTTPError) as ex:
+        except (
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.HTTPError,
+            requests.exceptions.ConnectionError
+        ) as ex:
             raise Exception(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}") from ex
         history.append({"role": "assistant", "content": None})
         buffer = ""
@@ -946,7 +951,7 @@ class UIManager:
     @staticmethod
     def update_chat_label(selected_model: str) -> tuple:
         if selected_model == MODELS[1]:
-            return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=False)
+            return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=True)
         return gr.update(label=f"LLM: {selected_model}"), gr.update(interactive=True)
 
     def launch_ui(self):
@@ -1162,7 +1167,16 @@ class UIManager:
             ).success(
                 fn=self.auth_manager.update_user_ui_state,
                 inputs=[local_data],
-                outputs=[local_data, documents_tab, settings_tab, logging_tab, login_btn, modal, message_login]
+                outputs=[
+                    local_data,
+                    documents_tab,
+                    settings_tab,
+                    logging_tab,
+                    login_btn,
+                    modal,
+                    message_login,
+                    files_selected
+                ]
             ).success(
                 fn=None,
                 inputs=[local_data],
@@ -1287,7 +1301,7 @@ class UIManager:
 
             demo.load(
                 fn=self.auth_manager.update_user_ui_state,
-                inputs=[local_data],
+                inputs=[local_data, gr.State(False)],
                 outputs=[
                     local_data,
                     documents_tab,
