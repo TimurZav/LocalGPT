@@ -28,7 +28,6 @@ from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["OPENAI_API_KEY"] = ""
 logger: logging.getLogger = get_logger(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
 
 
