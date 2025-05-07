@@ -880,7 +880,6 @@ class ModelManager:
         :return: None.
         """
         if model_name != self.llm.model:
-            self.current_model = model_name
             self.llm = ChatOllama(model=model_name)
             self.agent_executor = create_sql_agent(
                 self.llm,
