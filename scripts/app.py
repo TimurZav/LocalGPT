@@ -15,12 +15,12 @@ from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
 from tinydb.queries import QueryLike
+from langchain_ollama import ChatOllama
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
 from langchain_community.vectorstores import Chroma
 from langchain_community.utilities import SQLDatabase
 from langchain.memory import ConversationBufferMemory
-from langchain_community.chat_models import ChatOllama
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain.text_splitter import RecursiveCharacterTextSplitter
