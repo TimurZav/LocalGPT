@@ -59,6 +59,7 @@ if not os.path.exists(DATA_DIR):
     os.mkdir(DATA_DIR)
 DB_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/chroma")
 DATABASE_URL: str = f"sqlite:///{DB_DIR}/users_data.db"
+DATABASE_DATA_URL: str = "mysql+pymysql://myuser:mypassword@localhost:3306/mydatabase"
 MODELS_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/models")
 LOGGING_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/logging")
 if not os.path.exists(LOGGING_DIR):

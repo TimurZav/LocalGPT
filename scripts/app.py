@@ -20,11 +20,10 @@ from langchain.docstore.document import Document
 from langchain_community.vectorstores import Chroma
 from langchain_community.utilities import SQLDatabase
 from langchain.memory import ConversationBufferMemory
-from langchain_community.chat_models import ChatOpenAI
+from langchain_community.chat_models import ChatOllama
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from typing import List, Optional, Tuple, AsyncGenerator, cast, Union
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
@@ -724,15 +723,15 @@ class MessageManager:
     @staticmethod
     def get_recent_history(history: List[dict]) -> List[dict]:
         """
-        Получает последние 3 пары сообщений из истории.
+        Gets the last 3 message pairs from the history.
 
-        :param history: Полная история диалога
-        :return: Список с последними парами сообщений
+        :param history: Full history of the dialog.
+        :return: List with the last message pairs.
         """
-        pair_count = 0
-        temp_history = []
+        pair_count: int = 0
+        temp_history: list = []
 
-        for message in reversed(history[:-1]):  # Исключаем последнее сообщение пользователя
+        for message in reversed(history[:-1]):  # Exclude the user's last message
             if message["role"] == "user" and pair_count == 0:
                 continue
 
@@ -749,10 +748,10 @@ class MessageManager:
     @staticmethod
     def process_retrieved_docs(retrieved_docs: str) -> str:
         """
-        Обрабатывает извлеченные документы, удаляя HTML-теги.
+        Processes the extracted documents by deleting HTML tags.
 
-        :param retrieved_docs: Документы с HTML-тегами
-        :return: Документы без HTML-тегов
+        :param retrieved_docs: Documents with HTML tags.
+        :return: Documents without HTML tags.
         """
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
         for file in files:
@@ -762,10 +761,10 @@ class MessageManager:
     @staticmethod
     def prepare_chat_history(history: List[dict]) -> List[BaseMessage]:
         """
-        Преобразует историю диалога в формат сообщений LangChain.
+        Converts the dialog history to the Longchain message format.
 
-        :param history: История диалога в виде списка словарей
-        :return: Список сообщений в формате LangChain
+        :param history: The history of the dialogue in the form of a dictionary list.
+        ::return: A list of messages in Long Chain format.
         """
         langchain_messages = []
         for message in history:
@@ -774,7 +773,7 @@ class MessageManager:
 
             if role == "user":
                 if isinstance(content, tuple):
-                    # Обрабатываем сообщения с изображениями
+                    # Processing messages with images
                     human_message = HumanMessage(
                         content=[
                             {"type": "text", "text": langchain_messages[-1].content if langchain_messages else ""},
@@ -791,12 +790,12 @@ class MessageManager:
 
     def prepare_context_message(self, history: List[dict], retrieved_docs: str, mode: str) -> str:
         """
-        Подготавливает контекстное сообщение на основе истории и документов.
+        Prepares a contextual message based on history and documents.
 
-        :param history: История диалога
-        :param retrieved_docs: Извлеченные документы
-        :param mode: Режим работы
-        :return: Контекстное сообщение
+        :param history: The history of dialogue.
+        :param retrieved_docs: Extracted documents.
+        :param mode: Operating mode.
+        :return: Contextual message.
         """
         last_user_message: str = history[-1].get("content")
         processed_docs = self.process_retrieved_docs(retrieved_docs)
@@ -808,17 +807,6 @@ class MessageManager:
             )
 
         return last_user_message
-
-    @staticmethod
-    def extract_files_from_docs(retrieved_docs: str) -> List[str]:
-        """
-        Извлекает файлы из документов с HTML-тегами.
-
-        :param retrieved_docs: Документы с HTML-тегами
-        :return: Список имен файлов
-        """
-        files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
-        return files
 
     @staticmethod
     def add_source_references(
@@ -861,32 +849,47 @@ class ModelManager:
 
         # Initialize SQL database connection
         self.sql_db = SQLDatabase.from_uri(
-            "mysql+pymysql://myuser:mypassword@localhost:3306/mydatabase",
+            database_uri=DATABASE_DATA_URL,
             sample_rows_in_table_info=3
         )
 
-        # Создаем LLM с поддержкой потоковой передачи
-        self.llm = ChatOpenAI(
-            model="gpt-3.5-turbo",
-            streaming=True,
-            callbacks=[StreamingStdOutCallbackHandler()]
-        )
-
-        # Создаем память для хранения истории разговора
+        # Creating a memory to store the conversation history
         self.memory = ConversationBufferMemory(
             memory_key="chat_history",
             return_messages=True
         )
 
-        # Создаем SQL агент с поддержкой потокового вывода и памяти
+        # Initializing the base model
+        self.llm = ChatOllama(model=MODELS[0])
+
+        # Creating an SQL agent with support for streaming output and memory
         self.agent_executor = create_sql_agent(
             self.llm,
             db=self.sql_db,
-            agent_type="openai-tools",
+            agent_type="tool-calling",
             verbose=True,
             stream_runnable=True,
             memory=self.memory
         )
+
+    def update_model(self, model_name: str):
+        """
+        Updates the LLM and agent model only if the model has changed.
+        
+        :param model_name: The name of the model to use.
+        :return: None.
+        """
+        if model_name != self.llm.model:
+            self.current_model = model_name
+            self.llm = ChatOllama(model=model_name)
+            self.agent_executor = create_sql_agent(
+                self.llm,
+                db=self.sql_db,
+                agent_type="tool-calling",
+                verbose=True,
+                stream_runnable=True,
+                memory=self.memory
+            )
 
     async def generate_response_stream(
         self,
@@ -923,17 +926,20 @@ class ModelManager:
 
         logger.info(f"Beginning response generation [uid - {uid}]")
 
-        files = self.message_manager.extract_files_from_docs(retrieved_docs)
+        # Update the model only if it has changed
+        self.update_model(model)
 
-        # Используем полный контекст, если он предоставлен
+        files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
+
+        # Use full context if provided
         recent_history = self.message_manager.get_recent_history(history)
         langchain_messages = self.message_manager.prepare_chat_history(recent_history)
 
-        # Добавляем последнее сообщение пользователя из истории
+        # Add the user's last message from history
         last_message = self.message_manager.prepare_context_message(history, retrieved_docs, mode)
         langchain_messages.append(HumanMessage(content=last_message))
 
-        # Обновляем память для использования в будущих запросах
+        # Refresh memory for use in future requests
         self.memory.clear()
         for msg in langchain_messages:
             if isinstance(msg, HumanMessage):
@@ -941,17 +947,23 @@ class ModelManager:
             elif isinstance(msg, AIMessage):
                 self.memory.chat_memory.add_ai_message(msg.content)
 
-        # Вызываем агента с текущим сообщением и историей
-        result = self.agent_executor.invoke({
-            "input": last_message,
-            "chat_history": langchain_messages
-        })
+        if is_use_tools:
+            # Using an agent with tools
+            result = self.agent_executor.invoke({
+                "input": last_message,
+                "chat_history": langchain_messages
+            })
+            response_text = result["output"]
+        else:
+            # Use the model directly
+            response = self.llm.invoke(langchain_messages)
+            response_text = response.content
 
         logger.info(f"Response generation completed [uid - {uid}]")
-        history.append({"role": "assistant", "content": result["output"]})
+        history.append({"role": "assistant", "content": response_text})
         yield history
 
-        yield self.message_manager.add_source_references(history, scores, files, result["output"])
+        yield self.message_manager.add_source_references(history, scores, files, response_text)
         self.message_manager.queue -= 1
         _ = self.analytics_manager.update_message_analytics(history)
 
@@ -971,6 +983,15 @@ class UIManager:
 
     @staticmethod
     def update_chat_label(selected_model: str) -> tuple:
+        """
+        Updates the label of the chat interface based on the selected model.
+
+        :param: selected_model (str): The name of the currently selected model.
+
+        :returns: A tuple of two Gradio updates. The first update sets the label of the chat
+                  interface to the name of the selected model. The second update sets the interactive status
+                  of the chat interface to True if the selected model is not the "llm" model, or False otherwise.
+        """
         if selected_model == MODELS[1]:
             return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=True)
         return gr.update(label=f"LLM: {selected_model}"), gr.update(interactive=True)
@@ -989,8 +1010,7 @@ class UIManager:
         - Settings: For configuring various parameters.
         - Logs: For displaying chat analytics.
 
-        Returns:
-            gr.Blocks: The Gradio Blocks instance for the LocalGPT application UI.
+        :return: gr.Blocks: The Gradio Blocks instance for the LocalGPT application UI.
         """
         with gr.Blocks(
             title="LocalGPT",
