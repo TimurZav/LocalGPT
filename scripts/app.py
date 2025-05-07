@@ -8,24 +8,32 @@ import pandas as pd
 import gradio as gr
 from re import Pattern
 from __init__ import *
-from ollama import AsyncClient
 from gradio_modal import Modal
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
+from tinydb.queries import QueryLike
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
-from typing import List, Optional, Tuple, Iterator
 from langchain_community.vectorstores import Chroma
+from langchain_community.utilities import SQLDatabase
+from langchain.memory import ConversationBufferMemory
+from langchain_community.chat_models import ChatOpenAI
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.agent_toolkits import create_sql_agent
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.callbacks import StreamingStdOutCallbackHandler
+from typing import List, Optional, Tuple, AsyncGenerator, cast, Union
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-logger: logging.getLogger = get_logger(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
+logger: logging.getLogger = get_logger(
+    str(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
+)
 
 
 class SystemPromptManager:
@@ -63,7 +71,7 @@ class SystemPromptManager:
         :param mode: Mode.
         :return: Prompt.
         """
-        return QUERY_SYSTEM_PROMPT if mode == "ВНД" else LLM_SYSTEM_PROMPT
+        return QUERY_SYSTEM_PROMPT if mode == "RAG" else LLM_SYSTEM_PROMPT
 
 
 class AnalyticsManager:
@@ -101,7 +109,7 @@ class AnalyticsManager:
         """
         message = messages[-2]["content"] if messages else None
         answer = messages[-1]["content"] if message else None
-        filter_query = where('Сообщения') == message
+        filter_query = cast(QueryLike, where('Сообщения') == message)
         if result := self.tiny_db.search(filter_query):
             if analyse is None:
                 self.tiny_db.update({
@@ -288,7 +296,7 @@ class AuthManager:
         else:
             is_logged_in = False
 
-        obj_tabs = [local_data] + [gr.update(visible=is_logged_in) for _ in range(3)]
+        obj_tabs: List[Union[gr.update, None, str]] = [local_data] + [gr.update(visible=is_logged_in) for _ in range(3)]
         if is_logged_in:
             obj_tabs.append(gr.update(value="Выйти", icon=LOGOUT_ICON))
         else:
@@ -714,82 +722,103 @@ class MessageManager:
         return "", history, uid
 
     @staticmethod
-    def generate_completion_with_context(
-        history: List[dict],
-        retrieved_docs: str,
-        mode: str,
-        uid: str
-    ) -> Tuple[list, list]:
+    def get_recent_history(history: List[dict]) -> List[dict]:
         """
-        Generate a chat completion response based on user history and retrieved documents.
+        Получает последние 3 пары сообщений из истории.
 
-        This function constructs a message prompt for the language model, incorporating user history,
-        context from retrieved documents, and various parameters that influence the response generation.
-
-        :param history: A list of tuples containing the conversation history, where each tuple consists of
-                        the user's message and the assistant's response.
-        :param retrieved_docs: A string containing documents retrieved for context, which may include
-                               HTML anchor tags.
-        :param mode: A string indicating the mode of response generation.
-        :param uid: A unique identifier for the user, used for logging purposes.
-        :return: A generator for the chat completion response and a list of files extracted from the
-                 retrieved documents.
+        :param history: Полная история диалога
+        :return: Список с последними парами сообщений
         """
-        last_user_message: str = history[-1].get("content")
-        files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
-        for file in files:
-            retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
-        if retrieved_docs and mode in [MODES[0], MODES[1]]:
-            last_user_message = (
-                f"Контекст: {retrieved_docs}\n\nИспользуя только контекст, ответь на вопрос: "
-                f"{last_user_message}"
-            )
+        pair_count = 0
+        temp_history = []
 
-        pair_count = 0  # Счетчик пар "user-assistant"
-        temp_history = []  # Временный список для обратного добавления диалогов
-        for message in reversed(history):
+        for message in reversed(history[:-1]):  # Исключаем последнее сообщение пользователя
             if message["role"] == "user" and pair_count == 0:
                 continue
 
-            if message["role"] == "user" and isinstance(message["content"], tuple):
-                temp_history.append({
-                    "role": "user",
-                    "content": temp_history[-1]["content"],
-                    "images": [message["content"][0]]
-                })
-            elif message["role"] == "user":
-                temp_history.append({
-                    "role": "user",
-                    "content": message["content"]
-                })
-            elif message["role"] == "assistant":
+            temp_history.append(message)
+
+            if message["role"] == "assistant":
                 pair_count += 1
-                temp_history.append({
-                    "role": "assistant",
-                    "content": message["content"]
-                })
 
             if pair_count == 3:
                 break
 
-        dialog_history: List[dict] = list(reversed(temp_history))
-        messages = [
-            *dialog_history
-        ]
-        if len(history) > 1 and isinstance(history[-2].get("content"), tuple):
-            messages.append({
-                "role": "user",
-                "content": last_user_message,
-                "images": [history[-2].get("content")[0]]
-            })
-        else:
-            messages.append({
-                "role": "user",
-                "content": last_user_message
-            })
+        return list(reversed(temp_history))
 
-        logger.info(f"The question has been fully formed [uid - {uid}]")
-        return messages, files
+    @staticmethod
+    def process_retrieved_docs(retrieved_docs: str) -> str:
+        """
+        Обрабатывает извлеченные документы, удаляя HTML-теги.
+
+        :param retrieved_docs: Документы с HTML-тегами
+        :return: Документы без HTML-тегов
+        """
+        files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
+        for file in files:
+            retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
+        return retrieved_docs
+
+    @staticmethod
+    def prepare_chat_history(history: List[dict]) -> List[BaseMessage]:
+        """
+        Преобразует историю диалога в формат сообщений LangChain.
+
+        :param history: История диалога в виде списка словарей
+        :return: Список сообщений в формате LangChain
+        """
+        langchain_messages = []
+        for message in history:
+            role = message.get("role")
+            content = message.get("content", "")
+
+            if role == "user":
+                if isinstance(content, tuple):
+                    # Обрабатываем сообщения с изображениями
+                    human_message = HumanMessage(
+                        content=[
+                            {"type": "text", "text": langchain_messages[-1].content if langchain_messages else ""},
+                            {"type": "image_url", "image_url": {"url": content[0]}}
+                        ]
+                    )
+                    langchain_messages.append(human_message)
+                else:
+                    langchain_messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                langchain_messages.append(AIMessage(content=content or ""))
+
+        return langchain_messages
+
+    def prepare_context_message(self, history: List[dict], retrieved_docs: str, mode: str) -> str:
+        """
+        Подготавливает контекстное сообщение на основе истории и документов.
+
+        :param history: История диалога
+        :param retrieved_docs: Извлеченные документы
+        :param mode: Режим работы
+        :return: Контекстное сообщение
+        """
+        last_user_message: str = history[-1].get("content")
+        processed_docs = self.process_retrieved_docs(retrieved_docs)
+
+        if processed_docs and mode in [MODES[0], MODES[1]]:
+            last_user_message = (
+                f"Контекст: {processed_docs}\n\nИспользуя только контекст, ответь на вопрос: "
+                f"{last_user_message}"
+            )
+
+        return last_user_message
+
+    @staticmethod
+    def extract_files_from_docs(retrieved_docs: str) -> List[str]:
+        """
+        Извлекает файлы из документов с HTML-тегами.
+
+        :param retrieved_docs: Документы с HTML-тегами
+        :return: Список имен файлов
+        """
+        files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
+        return files
 
     @staticmethod
     def add_source_references(
@@ -830,33 +859,34 @@ class ModelManager:
         self.prompt_manager: SystemPromptManager = prompt_manager
         self.analytics_manager: AnalyticsManager = analytics_manager
 
-    @staticmethod
-    def _integrate_functions(response, messages: List[dict]):
-        """
-        Integrates function calls within a chat model by generating chat completions,
-        invoking available functions based on the model's output, and returning the updated
-        chat completion generator.
+        # Initialize SQL database connection
+        self.sql_db = SQLDatabase.from_uri(
+            "mysql+pymysql://myuser:mypassword@localhost:3306/mydatabase",
+            sample_rows_in_table_info=3
+        )
 
-        :param response: Response of server ollama.
-        :param messages: A list of message dictionaries representing the conversation context.
-        :return: A generator object containing the chat completion responses after function integration.
-        """
-        for tool in response["message"].get("tool_calls") or []:
-            available_functions: dict = {
-                "get_current_weather": get_current_weather,
-                "calculate": calculate
-            }
-            if function_to_call := available_functions.get(tool["function"]["name"]):
-                func_result = function_to_call(**tool["function"]["arguments"])
-                logger.info(f"Function output: {func_result}")
-                if func_result:
-                    messages.append({
-                        "role": "tool",
-                        "content": func_result,
-                        "tool_calls": response["message"]["tool_calls"]
-                    })
-            else:
-                logger.debug(f"Function not found: {tool['function']['name']}")
+        # Создаем LLM с поддержкой потоковой передачи
+        self.llm = ChatOpenAI(
+            model="gpt-3.5-turbo",
+            streaming=True,
+            callbacks=[StreamingStdOutCallbackHandler()]
+        )
+
+        # Создаем память для хранения истории разговора
+        self.memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True
+        )
+
+        # Создаем SQL агент с поддержкой потокового вывода и памяти
+        self.agent_executor = create_sql_agent(
+            self.llm,
+            db=self.sql_db,
+            agent_type="openai-tools",
+            verbose=True,
+            stream_runnable=True,
+            memory=self.memory
+        )
 
     async def generate_response_stream(
         self,
@@ -867,7 +897,7 @@ class ModelManager:
         scores: List[float],
         is_use_tools: bool,
         uid: str
-    ) -> Iterator[List[List[str]]]:
+    ) -> AsyncGenerator[list[dict], None]:
         """
         Generates a response based on user input, context, and retrieved documents.
 
@@ -891,46 +921,37 @@ class ModelManager:
             yield history[:-1]
             return
 
-        partial_text = ""
         logger.info(f"Beginning response generation [uid - {uid}]")
-        system_prompt = [{"role": "system", "content": self.prompt_manager.system_prompt}]
-        messages, files = self.message_manager.generate_completion_with_context(
-            history=history,
-            retrieved_docs=retrieved_docs,
-            mode=mode,
-            uid=uid
-        )
-        messages = system_prompt + messages
-        try:
-            response = requests.get(IP_MODEL, timeout=10)
-            response.raise_for_status()
-            if is_use_tools:
-                response = await AsyncClient(host=IP_MODEL).chat(
-                    model=model,
-                    messages=messages,
-                    tools=tools
-                )
-                self._integrate_functions(response, messages)
-            stream = await AsyncClient(host=IP_MODEL).chat(
-                model=model,
-                messages=messages,
-                stream=True,
-            )
-        except (
-            requests.exceptions.ConnectTimeout,
-            requests.exceptions.HTTPError,
-            requests.exceptions.ConnectionError
-        ) as ex:
-            raise Exception(f"Сервер {IP_MODEL} недоступен или не отвечает. Ошибка - {ex}") from ex
-        history.append({"role": "assistant", "content": None})
-        buffer = ""
-        async for chunk in stream:
-            buffer += chunk['message']['content']
-            history[-1]["content"] = buffer
-            yield history
+
+        files = self.message_manager.extract_files_from_docs(retrieved_docs)
+
+        # Используем полный контекст, если он предоставлен
+        recent_history = self.message_manager.get_recent_history(history)
+        langchain_messages = self.message_manager.prepare_chat_history(recent_history)
+
+        # Добавляем последнее сообщение пользователя из истории
+        last_message = self.message_manager.prepare_context_message(history, retrieved_docs, mode)
+        langchain_messages.append(HumanMessage(content=last_message))
+
+        # Обновляем память для использования в будущих запросах
+        self.memory.clear()
+        for msg in langchain_messages:
+            if isinstance(msg, HumanMessage):
+                self.memory.chat_memory.add_user_message(msg.content)
+            elif isinstance(msg, AIMessage):
+                self.memory.chat_memory.add_ai_message(msg.content)
+
+        # Вызываем агента с текущим сообщением и историей
+        result = self.agent_executor.invoke({
+            "input": last_message,
+            "chat_history": langchain_messages
+        })
 
         logger.info(f"Response generation completed [uid - {uid}]")
-        yield self.message_manager.add_source_references(history, scores, files, partial_text)
+        history.append({"role": "assistant", "content": result["output"]})
+        yield history
+
+        yield self.message_manager.add_source_references(history, scores, files, result["output"])
         self.message_manager.queue -= 1
         _ = self.analytics_manager.update_message_analytics(history)
 

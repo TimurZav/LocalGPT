@@ -25,7 +25,7 @@ LLM_SYSTEM_PROMPT: str = "Вы, Макар, — полезный и честны
                          "Данные от функций надежны, но могут быть нерелевантны. Анализируйте их в контексте вопроса " \
                          "и дополняйте своим ответом, чтобы он был полным и полезным."
 
-MODES: list = ["ВНД", "Поиск", "Свободное общение"]
+MODES: list = ["RAG", "Поиск", "Свободное общение"]
 CONTEXT_SIZE = 4000
 
 LOADER_MAPPING: dict = {
@@ -46,7 +46,7 @@ LOADER_MAPPING: dict = {
 IP_MODEL: str = "http://localhost:11434"
 LOGIN_SERVER: str = "Test"
 PASSWORD_SERVER: str = "Test"
-MODELS: list = ["nemotron", "llama3.2-vision"]
+MODELS: list = ["granite3.2", "llama3.2-vision"]
 MODEL_AUDIO = "openai/whisper-large-v3-turbo"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
