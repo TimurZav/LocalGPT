@@ -104,11 +104,6 @@ tr span {
   border-style: none;
 }
 
-.user {
-    background: #2042b9;
-    color: white;
-}
-
 @media (min-width: 1024px) {
     .modal-container.svelte-7knbu5 {
         max-width: 50% !important
