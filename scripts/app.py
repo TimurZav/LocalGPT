@@ -6,6 +6,7 @@ import tempfile
 import numpy as np
 import pandas as pd
 import gradio as gr
+import soundfile as sf
 from re import Pattern
 from __init__ import *
 from gradio_modal import Modal
@@ -690,10 +691,39 @@ class AudioManager:
 
         return messages, None
 
+    def transcribe_from_file(self, file_path: str) -> str:
+        """
+        Downloads an audio file and transcribes it into text.
+        
+        ::param file_path: Path to the audio file
+        :return: Transcribed text or error message
+        """
+        try:
+            data, sr = sf.read(file_path)
+            
+            if not isinstance(data, np.ndarray):
+                raise ValueError(f"Expected numpy array, got {type(data)}")
+                
+            # Convert to mono if stereo
+            if len(data.shape) > 1 and data.shape[1] > 1:
+                data = data.mean(axis=1)
+
+            data = data.astype(np.float32)
+            if np.max(np.abs(data)) > 0:
+                data /= np.max(np.abs(data))
+
+            transcribed_text = self.pipeline({"sampling_rate": sr, "raw": data})["text"]
+            logger.info(f"Successfully transcribed audio file: {file_path}")
+            return transcribed_text.strip()
+        except Exception as e:
+            logger.error(f"Error processing audio file {file_path}: {e}")
+            return f"Ошибка обработки аудио файла: {str(e)}"
+
 
 class MessageManager:
     def __init__(self):
         self.queue: int = 0
+        self.audio_manager = AudioManager()
 
     def add_user_message(self, messages: dict, history: Optional[List]):
         """
@@ -713,9 +743,21 @@ class MessageManager:
         logger.info(f"Processing the question. Queue - {self.queue}. UID - [{uid}]")
         if history is None:
             history = []
+
+        # File processing (audio and images)
         if messages["files"]:
-            history.append({"role": "user", "content": messages["files"]})
-        history.append({"role": "user", "content": messages["text"]})
+            for file in messages["files"]:
+                if isinstance(file, str) and file.endswith('.wav'):  # Audio File
+                    # Using AudioManager for transcription
+                    transcribed_text = self.audio_manager.transcribe_from_file(file)
+                    history.append({"role": "user", "content": transcribed_text})
+                else:  # Image
+                    history.append({"role": "user", "content": file})
+
+        # Добавляем текстовое сообщение, если оно есть
+        if messages["text"]:
+            history.append({"role": "user", "content": messages["text"]})
+
         self.queue += 1
         logger.info(f"The question has been processed. UID - [{uid}]")
         return "", history, uid
@@ -952,11 +994,12 @@ class ModelManager:
                 "input": last_message,
                 "chat_history": langchain_messages
             })
-            response_text = result["output"]
+            # Extract the actual response by removing think tags and their content
+            response_text = re.sub(r'<think>.*?</think>', '', result["output"], flags=re.DOTALL).strip()
         else:
             # Use the model directly
             response = self.llm.invoke(langchain_messages)
-            response_text = response.content
+            response_text = re.sub(r'<think>.*?</think>', '', response.content, flags=re.DOTALL).strip()
 
         logger.info(f"Response generation completed [uid - {uid}]")
         history.append({"role": "assistant", "content": response_text})
@@ -1067,12 +1110,9 @@ class UIManager:
                         msg = gr.MultimodalTextbox(
                             label="Отправить сообщение",
                             placeholder="👉 Напишите запрос",
+                            sources=["upload", "microphone"],
                             show_label=False
                         )
-
-                    with gr.Column(scale=1):
-                        stream = gr.State()
-                        input_audio_microphone = gr.Audio(sources=["microphone"], streaming=True, show_label=False)
 
                 with gr.Row(elem_id="buttons"):
                     like = gr.Button(value="👍 Понравилось")
@@ -1321,22 +1361,6 @@ class UIManager:
                 inputs=None,
                 outputs=None,
                 cancels=[click_msg_event]
-            )
-
-            input_audio_microphone.stop_recording(
-                fn=self.audio_manager.stop_recording,
-                inputs=None,
-                outputs=[input_audio_microphone]
-            ).success(
-                fn=self.audio_manager.transcribe,
-                inputs=[msg, stream],
-                outputs=[msg, stream]
-            )
-
-            input_audio_microphone.stream(
-                fn=self.audio_manager.add_to_stream,
-                inputs=[input_audio_microphone, stream],
-                outputs=[input_audio_microphone, stream]
             )
 
             demo.load(
