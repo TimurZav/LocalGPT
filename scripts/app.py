@@ -752,7 +752,8 @@ class MessageManager:
                     transcribed_text = self.audio_manager.transcribe_from_file(file)
                     history.append({"role": "user", "content": transcribed_text})
                 else:  # Image
-                    history.append({"role": "user", "content": file})
+                    history.append({"role": "user", "content": messages["files"]})
+                    break
 
         # Добавляем текстовое сообщение, если оно есть
         if messages["text"]:
@@ -1056,8 +1057,7 @@ class UIManager:
         """
         with gr.Blocks(
             title="LocalGPT",
-            theme=gr.themes.ocean.Ocean(),
-            css=BLOCK_CSS
+            theme=gr.themes.ocean.Ocean()
         ) as demo:
             # Ваш логотип и текст заголовка
             logo_svg = f'<img src="{FAVICON_PATH}" width="48px" style="display: inline">'
@@ -1218,6 +1218,10 @@ class UIManager:
                         analytics = gr.DataFrame(
                             value=self.analytics_manager.get_analytics,  # type: ignore
                             interactive=False,
+                            show_search="search",
+                            show_row_numbers=True,
+                            show_fullscreen_button=True,
+                            show_copy_button=True,
                             wrap=True
                         )
 

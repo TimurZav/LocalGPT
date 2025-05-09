@@ -84,63 +84,6 @@ os.makedirs(FILES_DIR, exist_ok=True)
 os.chmod(FILES_DIR, 0o0777)
 os.environ['GRADIO_TEMP_DIR'] = FILES_DIR
 
-BLOCK_CSS: str = """
-
-#buttons button {
-    min-width: min(120px,100%);
-}
-
-/* Применяем стили для td */
-tr focus {
-    user-select: all; /* Разрешаем выделение текста */
-}
-
-/* Применяем стили для ячейки span внутри td */
-tr span {
-    user-select: all; /* Разрешаем выделение текста */
-}
-
-.message-bubble-border.svelte-12dsd9j.svelte-12dsd9j.svelte-12dsd9j {
-  border-style: none;
-}
-
-@media (min-width: 1024px) {
-    .modal-container.svelte-7knbu5 {
-        max-width: 50% !important
-    }
-}
-
-.gap.svelte-1m1obck {
-    padding: 4%
-}
-
-#login_btn {
-    width: 250px;
-    height: 40px;
-}
-
-.icon-button-wrapper {
-    display: none;
-}
-
-.hide {
-    display: none;
-}
-
-.upload-button {
-    pointer-events: none;
-    cursor: not-allowed;
-    opacity: 0.5;
-}
-
-.enable {
-    pointer-events: auto;
-    cursor: pointer;
-    opacity: 1;
-}
-
-"""
-
 
 JS: str = """
 function disable_btn() {
