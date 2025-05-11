@@ -27,6 +27,7 @@ from langchain_community.agent_toolkits import create_sql_agent
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import List, Optional, Tuple, AsyncGenerator, cast, Union
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
 
 
@@ -896,11 +897,22 @@ class ModelManager:
             sample_rows_in_table_info=3
         )
 
-        # Creating a memory to store the conversation history
-        self.memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            return_messages=True
-        )
+        # Creating a prompt to store the conversation history
+        self.system = """You are an agent designed to interact with a SQL database.
+        Given an input question, create a syntactically correct MySQL query to run, then look at the results of the query and return the answer.
+        You can order the results by a relevant column to return the most interesting examples in the database.
+        Never query for all the columns from a specific table, only ask for the relevant columns given the question.
+        You have access to tools for interacting with the database.
+        Only use the given tools. Only use the information returned by the tools to construct your final answer.
+        Only use the results of the given SQL query to generate your final answer and return that.
+        You MUST double check your query before executing it. If you get an error while executing a query then you should stop!
+
+        DO NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.) to the database.
+        Only create an SQL statement ONCE!"""
+
+        self.prompt = ChatPromptTemplate.from_messages(
+        [("system", self.system), ("human", "{input}"), MessagesPlaceholder(variable_name="agent_scratchpad")]
+        )  
 
         # Initializing the base model
         self.llm = ChatOllama(model=MODELS[0])
@@ -909,10 +921,9 @@ class ModelManager:
         self.agent_executor = create_sql_agent(
             self.llm,
             db=self.sql_db,
+            prompt=self.prompt,
             agent_type="tool-calling",
-            verbose=True,
-            stream_runnable=True,
-            memory=self.memory
+            verbose=True
         )
 
     def update_model(self, model_name: str):
@@ -927,10 +938,9 @@ class ModelManager:
             self.agent_executor = create_sql_agent(
                 self.llm,
                 db=self.sql_db,
+                prompt=self.prompt,
                 agent_type="tool-calling",
-                verbose=True,
-                stream_runnable=True,
-                memory=self.memory
+                verbose=True
             )
 
     async def generate_response_stream(
@@ -981,19 +991,10 @@ class ModelManager:
         last_message = self.message_manager.prepare_context_message(history, retrieved_docs, mode)
         langchain_messages.append(HumanMessage(content=last_message))
 
-        # Refresh memory for use in future requests
-        self.memory.clear()
-        for msg in langchain_messages:
-            if isinstance(msg, HumanMessage):
-                self.memory.chat_memory.add_user_message(msg.content)
-            elif isinstance(msg, AIMessage):
-                self.memory.chat_memory.add_ai_message(msg.content)
-
         if is_use_tools:
             # Using an agent with tools
             result = self.agent_executor.invoke({
-                "input": last_message,
-                "chat_history": langchain_messages
+                "input": langchain_messages
             })
             # Extract the actual response by removing think tags and their content
             response_text = re.sub(r'<think>.*?</think>', '', result["output"], flags=re.DOTALL).strip()
