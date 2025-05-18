@@ -16,12 +16,11 @@ from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
 from tinydb.queries import QueryLike
-from langchain_ollama import ChatOllama
+from openrouter import ChatOpenRouter
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
 from langchain_community.vectorstores import Chroma
 from langchain_community.utilities import SQLDatabase
-from langchain.memory import ConversationBufferMemory
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -915,7 +914,7 @@ class ModelManager:
         )  
 
         # Initializing the base model
-        self.llm = ChatOllama(model=MODELS[0])
+        self.llm = ChatOpenRouter(model_name="openai/gpt-4o-mini")
 
         # Creating an SQL agent with support for streaming output and memory
         self.agent_executor = create_sql_agent(
@@ -934,7 +933,7 @@ class ModelManager:
         :return: None.
         """
         if model_name != self.llm.model:
-            self.llm = ChatOllama(model=model_name)
+            self.llm = ChatOpenRouter(model_name=model_name)
             self.agent_executor = create_sql_agent(
                 self.llm,
                 db=self.sql_db,
@@ -979,7 +978,7 @@ class ModelManager:
         logger.info(f"Beginning response generation [uid - {uid}]")
 
         # Update the model only if it has changed
-        self.update_model(model)
+        # self.update_model(model)
 
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
 
@@ -1072,6 +1071,7 @@ class UIManager:
 
             uid = gr.State(None)
             scores = gr.State(None)
+            k_documents = gr.State(3)
             local_data = gr.JSON({}, visible=False)
 
             with gr.Tab("Чат"):
@@ -1105,15 +1105,25 @@ class UIManager:
                                 AVATAR_BOT
                             )
                         )
-
-                with gr.Row(equal_height=True):
-                    with gr.Column(scale=10):
+                        
                         msg = gr.MultimodalTextbox(
                             label="Отправить сообщение",
                             placeholder="👉 Напишите запрос",
                             sources=["upload", "microphone"],
                             show_label=False
                         )
+                        
+                        chat_interface = gr.ChatInterface(
+                            fn=lambda message, history: self.chat_interface_fn(
+                                message, history, collection_radio.value, k_documents.value, model.value, is_use_tools.value, uid.value, scores.value
+                            ),
+                            chatbot=chatbot,
+                            textbox=msg,
+                            save_history=True,
+                            type='messages',
+                            additional_inputs=[collection_radio, k_documents, model, is_use_tools, uid, scores]
+                        )
+                        chat_interface.saved_conversations.secret = "abcdefasd6200683922"
 
                 with gr.Row(elem_id="buttons"):
                     like = gr.Button(value="👍 Понравилось")
@@ -1244,7 +1254,7 @@ class UIManager:
                     )
                     submit_login = gr.Button("👤 Войти", variant="primary")
                     cancel_login = gr.Button("⛔ Отмена", variant="secondary")
-
+            
             submit_login.click(
                 fn=self.auth_manager.login,
                 inputs=[login, password],
