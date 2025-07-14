@@ -16,12 +16,11 @@ from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
 from tinydb.queries import QueryLike
-from langchain_ollama import ChatOllama
+from openrouter import ChatOpenRouter
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
 from langchain_community.vectorstores import Chroma
 from langchain_community.utilities import SQLDatabase
-from langchain.memory import ConversationBufferMemory
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -915,7 +914,7 @@ class ModelManager:
         )  
 
         # Initializing the base model
-        self.llm = ChatOllama(model=MODELS[0])
+        self.llm = ChatOpenRouter(model_name="openai/gpt-4o-mini")
 
         # Creating an SQL agent with support for streaming output and memory
         self.agent_executor = create_sql_agent(
@@ -934,7 +933,7 @@ class ModelManager:
         :return: None.
         """
         if model_name != self.llm.model:
-            self.llm = ChatOllama(model=model_name)
+            self.llm = ChatOpenRouter(model_name=model_name)
             self.agent_executor = create_sql_agent(
                 self.llm,
                 db=self.sql_db,
@@ -979,7 +978,7 @@ class ModelManager:
         logger.info(f"Beginning response generation [uid - {uid}]")
 
         # Update the model only if it has changed
-        self.update_model(model)
+        # self.update_model(model)
 
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
 
@@ -1058,7 +1057,8 @@ class UIManager:
         """
         with gr.Blocks(
             title="LocalGPT",
-            theme=gr.themes.ocean.Ocean()
+            theme=gr.themes.ocean.Ocean(),
+            css=BLOCK_CSS
         ) as demo:
             # Ваш логотип и текст заголовка
             logo_svg = f'<img src="{FAVICON_PATH}" width="48px" style="display: inline">'

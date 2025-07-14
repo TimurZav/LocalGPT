@@ -15,6 +15,7 @@ from langchain_community.document_loaders import (
 )
 
 
+os.environ["OPENROUTER_API_KEY"] = ""
 FAVICON_PATH: str = 'https://i.ibb.co/3CVGPf7/1681038242chatgpt-logo-png.png'
 QUERY_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважительный и честный ассистент. " \
                      "Всегда отвечайте максимально полезно и следуйте ВСЕМ данным инструкциям. " \
@@ -46,7 +47,7 @@ LOADER_MAPPING: dict = {
 IP_MODEL: str = "http://localhost:11434"
 LOGIN_SERVER: str = "Test"
 PASSWORD_SERVER: str = "Test"
-MODELS: list = ["qwen3", "granite3.2"]
+MODELS: list = ["openai/gpt-4o-mini", "meta-llama/llama-3.3-70b-instruct"]
 MODEL_AUDIO = "openai/whisper-large-v3-turbo"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
@@ -83,6 +84,16 @@ FILES_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/upload_files")
 os.makedirs(FILES_DIR, exist_ok=True)
 os.chmod(FILES_DIR, 0o0777)
 os.environ['GRADIO_TEMP_DIR'] = FILES_DIR
+
+BLOCK_CSS: str = """
+
+@media (min-width: 1024px) {
+    .modal-container.svelte-7knbu5 {
+        max-width: 50% !important
+    }
+}
+
+"""
 
 
 JS: str = """
