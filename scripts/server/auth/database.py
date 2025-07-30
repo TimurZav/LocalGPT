@@ -3,7 +3,7 @@ from sqlalchemy import create_engine
 from sqlalchemy import Column, String
 from sqlalchemy.orm import sessionmaker
 from passlib.context import CryptContext
-from scripts.__init__ import DB_DIR, DATABASE_URL
+from __init__ import DB_DIR, DATABASE_URL
 from sqlalchemy.ext.declarative import declarative_base
 
 os.makedirs(DB_DIR, exist_ok=True)

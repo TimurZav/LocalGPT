@@ -15,15 +15,18 @@ from langchain_community.document_loaders import (
 )
 
 
-FAVICON_PATH: str = 'https://i.ibb.co/DGGPZBG/logo.png'
-QUERY_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважительный и честный ассистент. " \
+os.environ["OPENROUTER_API_KEY"] = ""
+FAVICON_PATH: str = 'https://i.ibb.co/3CVGPf7/1681038242chatgpt-logo-png.png'
+QUERY_SYSTEM_PROMPT: str = "Вы, помощник по документам - полезный, уважительный и честный ассистент. " \
                      "Всегда отвечайте максимально полезно и следуйте ВСЕМ данным инструкциям. " \
                      "Не спекулируйте и не выдумывайте информацию. " \
                      "Отвечайте на вопросы, ссылаясь на контекст."
 
-LLM_SYSTEM_PROMPT: str = "Вы, Макар - полезный, уважительный и честный ассистент."
+LLM_SYSTEM_PROMPT: str = "Вы, помощник по документам — полезный и честный ассистент. " \
+                         "Данные от функций надежны, но могут быть нерелевантны. Анализируйте их в контексте вопроса " \
+                         "и дополняйте своим ответом, чтобы он был полным и полезным."
 
-MODES: list = ["ВНД", "Свободное общение"]
+MODES: list = ["RAG", "Поиск", "Свободное общение"]
 CONTEXT_SIZE = 4000
 
 LOADER_MAPPING: dict = {
@@ -41,14 +44,15 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-REPO_ID: str = "meetkai/functionary-small-v3.2-GGUF"
-MODEL: str = "functionary-small-v3.2.Q8_0.gguf"
-REPO: str = f"https://huggingface.co/{REPO_ID}/resolve/main/{MODEL}"
-MODEL_NAME: str = f"{REPO_ID}/{MODEL}"
+IP_MODEL: str = "http://localhost:11434"
+LOGIN_SERVER: str = "Test"
+PASSWORD_SERVER: str = "Test"
+MODELS: list = ["deepseek/deepseek-r1:free", "meta-llama/llama-3.3-70b-instruct:free"]
+MODEL_AUDIO = "openai/whisper-large-v3-turbo"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
 
-IP_ADDRESS = f"{socket.gethostbyname(socket.gethostname())}:{8001}"
+IP_ADDRESS = f"http://{socket.gethostbyname(socket.gethostname())}:8001"
 
 ABS_PATH: str = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR: str = "../data"
@@ -56,6 +60,7 @@ if not os.path.exists(DATA_DIR):
     os.mkdir(DATA_DIR)
 DB_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/chroma")
 DATABASE_URL: str = f"sqlite:///{DB_DIR}/users_data.db"
+DATABASE_DATA_URL: str = "mysql+pymysql://myuser:mypassword@localhost:3306/mydatabase"
 MODELS_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/models")
 LOGGING_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/logging")
 if not os.path.exists(LOGGING_DIR):
@@ -82,43 +87,10 @@ os.environ['GRADIO_TEMP_DIR'] = FILES_DIR
 
 BLOCK_CSS: str = """
 
-#buttons button {
-    min-width: min(120px,100%);
-}
-
-/* Применяем стили для td */
-tr focus {
-    user-select: all; /* Разрешаем выделение текста */
-}
-
-/* Применяем стили для ячейки span внутри td */
-tr span {
-    user-select: all; /* Разрешаем выделение текста */
-}
-
-.message-bubble-border.svelte-12dsd9j.svelte-12dsd9j.svelte-12dsd9j {
-  border-style: none;
-}
-
-.user {
-    background: #2042b9;
-    color: white;
-}
-
 @media (min-width: 1024px) {
     .modal-container.svelte-7knbu5 {
         max-width: 50% !important
     }
-}
-
-
-.gap.svelte-1m1obck {
-    padding: 4%
-}
-
-#login_btn {
-    width: 250px;
-    height: 40px;
 }
 
 """
@@ -154,6 +126,18 @@ function() {
     }
     const access_token = getStorage('access_token')
     return [access_token];
+}
+"""
+
+JS_MODEL_TOGGLE: str = """
+function toggleUploadButton(model) {
+    const uploadButton = document.querySelector('.upload-button');
+    if (model.includes("llama3.2-vision")) {
+        uploadButton.classList.add('enable');
+    } else {
+        uploadButton.classList.remove('enable');
+    }
+    return [model]
 }
 """
 
