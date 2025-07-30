@@ -89,6 +89,7 @@ langchain-community==0.3.2
 langchain-core==0.3.59
 langchain-huggingface==0.1.0
 langchain-text-splitters==0.3.0
+langchain-openai==0.3.16
 langcodes==3.4.1
 langsmith==0.1.137
 language_data==1.2.0
