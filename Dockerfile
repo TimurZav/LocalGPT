@@ -32,7 +32,8 @@ RUN apt update -y &&  \
 
 # Скопировать зависимости и установить их
 COPY requirements.txt .
-RUN pip install --no-deps --no-cache-dir -r requirements.txt
+RUN pip install --no-deps --no-cache-dir -r requirements.txt && \
+    python3 -c "import nltk; nltk.download('punkt_tab')"
 
 # Настройка рабочей директории
 WORKDIR /scripts
