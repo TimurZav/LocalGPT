@@ -33,7 +33,7 @@ RUN apt update -y &&  \
 # Скопировать зависимости и установить их
 COPY requirements.txt .
 RUN pip install --no-deps --no-cache-dir -r requirements.txt && \
-    python3 -c "import nltk; nltk.download('punkt_tab')"
+    python3 -c "import nltk; nltk.download('punkt_tab'); nltk.download('averaged_perceptron_tagger_eng')"
 
 # Настройка рабочей директории
 WORKDIR /scripts
