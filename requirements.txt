@@ -177,6 +177,7 @@ python-multipart==0.0.20
 python-pptx==1.0.2
 pytz==2024.2
 PyYAML==6.0.2
+pymysql==1.1.1
 razdel==0.5.0
 redis==5.0.1
 referencing==0.35.1
