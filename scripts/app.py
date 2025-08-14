@@ -1026,12 +1026,7 @@ class ModelManager:
         logger.info(f"Response generation completed [uid - {uid}]")
         history.append({"role": "assistant", "content": response_text})
         yield history
-
-        # Add source references if we have files from retrieved_docs
-        if not files and retrieved_docs:
-            files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
         
-        yield self.message_manager.add_source_references(history, scores, files, "")
         self.message_manager.queue -= 1
         _ = self.analytics_manager.update_message_analytics(history)
 
