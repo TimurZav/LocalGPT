@@ -915,7 +915,7 @@ class ModelManager:
         )  
 
         # Initializing the base model
-        self.llm = ChatOpenRouter(model_name="openai/gpt-4o-mini")
+        self.llm = ChatOpenRouter(model_name=MODELS[0])
 
         # Creating an SQL agent with support for streaming output and memory
         self.agent_executor = create_sql_agent(
@@ -933,7 +933,7 @@ class ModelManager:
             self.multi_agent_manager = MultiAgentManager(
                 document_manager=self.document_manager,
                 database_url=DATABASE_DATA_URL,
-                model_name="openai/gpt-4o-mini"
+                model_name=MODELS[0]
             )
 
     def update_model(self, model_name: str):
@@ -943,7 +943,7 @@ class ModelManager:
         :param model_name: The name of the model to use.
         :return: None.
         """
-        if model_name != self.llm.model:
+        if model_name != self.llm.model_name:
             self.llm = ChatOpenRouter(model_name=model_name)
             self.agent_executor = create_sql_agent(
                 self.llm,
@@ -988,7 +988,10 @@ class ModelManager:
         # Use Multi-Agent System if enabled and available
         if is_use_tools and self.multi_agent_manager:
             try:
-                logger.info(f"Using multi-agent system [uid - {uid}]")
+                logger.info(f"Using multi-agent system with model {model} [uid - {uid}]")
+                # Обновляем модель в многоагентной системе
+                self.multi_agent_manager.update_model(model)
+                
                 result = self.multi_agent_manager.process_query_sync(
                     query=last_user_message,
                     thread_id=uid
@@ -1013,14 +1016,14 @@ class ModelManager:
             except Exception as e:
                 logger.error(f"Error in multi-agent system, falling back to traditional approach: {e}")
                 # Fallback to traditional approach
-                response_text, files = await self._traditional_approach(
-                    history, mode, retrieved_docs, uid
+                response_text, _ = await self._traditional_approach(
+                    history, mode, retrieved_docs, uid, model
                 )
         else:
             # Traditional approach
             logger.info(f"Using traditional approach [uid - {uid}]")
-            response_text, files = await self._traditional_approach(
-                history, mode, retrieved_docs, uid
+            response_text, _ = await self._traditional_approach(
+                history, mode, retrieved_docs, uid, model
             )
 
         logger.info(f"Response generation completed [uid - {uid}]")
@@ -1030,9 +1033,12 @@ class ModelManager:
         self.message_manager.queue -= 1
         _ = self.analytics_manager.update_message_analytics(history)
 
-    async def _traditional_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str) -> tuple[str, list]:
+    async def _traditional_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str, model: str) -> tuple[str, list]:
         """Traditional approach for response generation"""
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
+
+        # Update model if changed
+        self.update_model(model)
 
         # Use full context if provided
         recent_history = self.message_manager.get_recent_history(history)

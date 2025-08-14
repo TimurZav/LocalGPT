@@ -3,7 +3,6 @@
 Использует LangGraph для оркестрации агентов
 """
 
-import json
 import logging
 from typing import Dict, List, Any, Optional, TypedDict, Annotated
 from dataclasses import dataclass
@@ -14,6 +13,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import create_sql_agent
 from openrouter import ChatOpenRouter
+from __init__ import MODELS
 
 # Для LangGraph
 from langgraph.graph import StateGraph, END
@@ -53,7 +53,7 @@ class GraphState(TypedDict):
 class MultiAgentManager:
     """Менеджер многоагентной системы"""
     
-    def __init__(self, document_manager, database_url: str, model_name: str = "openai/gpt-4o-mini"):
+    def __init__(self, document_manager, database_url: str, model_name: str = MODELS[0]):
         self.document_manager = document_manager
         self.model_name = model_name
         self.llm = ChatOpenRouter(model_name=model_name)
@@ -188,6 +188,15 @@ class MultiAgentManager:
         workflow.add_edge("integrator", END)
         
         return workflow.compile(checkpointer=MemorySaver())
+
+    def update_model(self, model_name: str):
+        """Обновление модели для всех агентов"""
+        if model_name != self.model_name:
+            self.model_name = model_name
+            self.llm = ChatOpenRouter(model_name=model_name)
+            # Пересоздаем SQL агента с новой моделью
+            self.sql_agent = self._create_sql_agent()
+            logger.info(f"Multi-agent system updated to use model: {model_name}")
 
     def _classify_query(self, state: GraphState) -> GraphState:
         """Классификация запроса"""

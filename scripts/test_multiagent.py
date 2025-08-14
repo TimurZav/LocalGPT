@@ -19,10 +19,15 @@ async def test_multiagent_system():
     document_manager = DocumentManager()
     document_manager.db = document_manager.initialize_database()
     
+    # Тестируем с разными моделями из MODELS
+    from __init__ import MODELS
+    test_model = MODELS[0]  # Используем первую доступную модель
+    print(f"Тестируем с моделью: {test_model}")
+    
     multi_agent = MultiAgentManager(
         document_manager=document_manager,
         database_url=DATABASE_DATA_URL,
-        model_name="openai/gpt-4o-mini"
+        model_name=test_model
     )
     
     # Тестовые запросы
@@ -73,6 +78,16 @@ async def test_multiagent_system():
             else:
                 print(f"   ⚠️ Ожидался {test['expected_type']}, получен {result['query_type']}")
             
+            # Тест смены модели для последнего запроса
+            if i == len(test_queries):
+                print(f"🔄 Тестируем смену модели на {MODELS[1] if len(MODELS) > 1 else MODELS[0]}")
+                new_model = MODELS[1] if len(MODELS) > 1 else MODELS[0]
+                multi_agent.update_model(new_model)
+                
+                # Повторяем запрос с новой моделью
+                result2 = await multi_agent.process_query(test['query'], f"test_{i}_model2")
+                print(f"   ✅ С новой моделью: {result2['answer'][:100]}...")
+            
             print()
             
         except Exception as e:
@@ -87,10 +102,15 @@ def test_sync_version():
     document_manager = DocumentManager()
     document_manager.db = document_manager.initialize_database()
     
+    # Используем модель из настроек
+    from __init__ import MODELS
+    test_model = MODELS[0]
+    print(f"Используем модель: {test_model}")
+    
     multi_agent = MultiAgentManager(
         document_manager=document_manager,
         database_url=DATABASE_DATA_URL,
-        model_name="openai/gpt-4o-mini"
+        model_name=test_model
     )
     
     # Простой тест
