@@ -1173,6 +1173,102 @@ class UIManager:
             choices.append((display_name, dialog['session_id']))
         return gr.update(choices=choices)
     
+    def get_dialog_radio_choices(self):
+        """Получить список диалогов для RadioGroup"""
+        dialogs = self.analytics_manager.get_all_dialogs()
+        choices = []
+        for dialog in dialogs[:15]:  # Ограничиваем количество для удобства
+            title = dialog['title']
+            if len(title) > 35:
+                title = title[:35] + "..."
+            date_str = dialog['updated_at'][:16].replace('T', ' ')
+            display_name = f"💬 {title} ({date_str})"
+            choices.append((display_name, dialog['session_id']))
+        return gr.update(choices=choices, value=None)
+    
+    def get_dialog_list_html(self) -> str:
+        """Создает HTML-список диалогов в стиле ChatGPT."""
+        dialogs = self.analytics_manager.get_all_dialogs()
+        if not dialogs:
+            return """
+            <div class="empty-dialogs">
+                <span style="font-size: 48px; display: block; margin-bottom: 12px;">💬</span>
+                <div>Нет сохраненных диалогов</div>
+                <div style="font-size: 12px; margin-top: 8px; opacity: 0.6;">Начните новый диалог, чтобы он появился здесь</div>
+            </div>
+            """
+        
+        html_items = []
+        for dialog in dialogs[:20]:  # Показываем только последние 20
+            title = dialog['title']
+            if len(title) > 40:
+                title = title[:40] + "..."
+            
+            date_str = dialog['updated_at'][:16].replace('T', ' ')
+            session_id = dialog['session_id']
+            
+            # Проверяем, является ли этот диалог активным
+            is_selected = session_id == self.current_session_id
+            selected_class = " selected" if is_selected else ""
+            
+            html_items.append(f"""
+            <div class="dialog-item{selected_class}" 
+                 data-session-id="{session_id}" 
+                 onclick="loadDialogById('{session_id}')">
+                <div class="dialog-item-title">
+                    <span>💬</span>
+                    <span>{title}</span>
+                </div>
+                <div class="dialog-item-date">
+                    {date_str}
+                </div>
+            </div>
+            """)
+        
+        return f"""
+        <div class="dialog-list-container">
+            {''.join(html_items)}
+        </div>
+        <script>
+        if (typeof loadDialogById === 'undefined') {{
+            window.loadDialogById = function(sessionId) {{
+                console.log('Loading dialog:', sessionId);
+                
+                // Обновляем визуальное выделение
+                document.querySelectorAll('.dialog-item').forEach(item => {{
+                    item.classList.remove('selected');
+                }});
+                
+                const selected = document.querySelector('[data-session-id="' + sessionId + '"]');
+                if (selected) {{
+                    selected.classList.add('selected');
+                }}
+                
+                // Находим скрытый текстбокс и устанавливаем значение
+                const textInput = document.querySelector('#selected-dialog-id input') ||
+                                 document.querySelector('#selected-dialog-id textarea');
+                
+                if (textInput) {{
+                    textInput.value = sessionId;
+                    textInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    console.log('Dialog ID set to:', sessionId);
+                }} else {{
+                    console.error('Hidden textbox not found');
+                }}
+                
+                // Находим и кликаем по скрытой кнопке
+                const loadBtn = document.getElementById('load-dialog-btn');
+                if (loadBtn) {{
+                    loadBtn.click();
+                    console.log('Load button clicked');
+                }} else {{
+                    console.error('Load button not found');
+                }}
+            }};
+        }}
+        </script>
+        """
+    
     
     def load_selected_dialog(self, selected_dialog_id: str) -> tuple:
         """
@@ -1278,14 +1374,13 @@ class UIManager:
                                 )
                                 
                                 
-                                # Dropdown для обработки событий
-                                dialog_selector = gr.Dropdown(
+                                # RadioGroup список диалогов
+                                dialog_radio = gr.Radio(
                                     choices=[],
                                     value=None,
-                                    label="Или выберите из списка:",
+                                    show_label=False,
                                     interactive=True,
-                                    allow_custom_value=False,
-                                    visible=True
+                                    elem_classes=["dialog-radio"]
                                 )
                                 
                                 # Кнопки действий
@@ -1542,36 +1637,43 @@ class UIManager:
 
             # Обновление списка диалогов при загрузке
             demo.load(
-                fn=self.get_dialog_choices,
-                outputs=dialog_selector
+                fn=self.get_dialog_radio_choices,
+                outputs=dialog_radio
             )
             
             # Новый диалог
             def new_dialog_with_update():
-                chat, choices = self.create_new_dialog()
-                return chat, choices, str(uuid.uuid4())
+                chat, _ = self.create_new_dialog()
+                return chat, str(uuid.uuid4())
                 
             new_dialog_btn.click(
                 fn=new_dialog_with_update,
-                outputs=[chatbot, dialog_selector, current_session]
+                outputs=[chatbot, current_session]
+            ).success(
+                fn=self.get_dialog_radio_choices,
+                outputs=dialog_radio
             )
             
-            # Выбор диалога
-            dialog_selector.change(
+            # Выбор диалога из radio  
+            dialog_radio.change(
                 fn=self.load_selected_dialog,
-                inputs=dialog_selector,
+                inputs=dialog_radio,
                 outputs=[chatbot, current_session]
             )
             
+            
             # Удаление диалога
             def delete_dialog_with_update(selected_id):
-                chat, selected, choices = self.delete_selected_dialog(selected_id)
-                return chat, choices, selected
+                chat, _, _ = self.delete_selected_dialog(selected_id)
+                return chat, str(uuid.uuid4())
                 
             delete_dialog_btn.click(
                 fn=delete_dialog_with_update,
-                inputs=dialog_selector,
-                outputs=[chatbot, dialog_selector, dialog_selector]
+                inputs=dialog_radio,
+                outputs=[chatbot, current_session]
+            ).success(
+                fn=self.get_dialog_radio_choices,
+                outputs=dialog_radio
             )
 
             # Pressing Enter
@@ -1595,8 +1697,8 @@ class UIManager:
                 inputs=chatbot,
                 queue=False
             ).success(
-                fn=self.get_dialog_choices,
-                outputs=dialog_selector
+                fn=self.get_dialog_radio_choices,
+                outputs=dialog_radio
             )
 
             # Like
@@ -1618,9 +1720,12 @@ class UIManager:
             # Clear history
             clear.click(
                 fn=new_dialog_with_update,
-                outputs=[chatbot, dialog_selector, current_session],
+                outputs=[chatbot, current_session],
                 queue=False,
                 js=JS
+            ).success(
+                fn=self.get_dialog_radio_choices,
+                outputs=dialog_radio
             )
 
             # Stop generation

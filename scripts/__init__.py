@@ -133,6 +133,165 @@ BLOCK_CSS: str = """
     background: #dc2626 !important;
 }
 
+/* Dialog List Styles */
+.dialog-list-container {
+    max-height: 400px;
+    overflow-y: auto;
+    margin: 12px 0;
+    border-radius: var(--radius-lg);
+}
+
+.dialog-list-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.dialog-list-container::-webkit-scrollbar-track {
+    background: var(--background-fill-secondary);
+    border-radius: 3px;
+}
+
+.dialog-list-container::-webkit-scrollbar-thumb {
+    background: var(--border-color-primary);
+    border-radius: 3px;
+}
+
+.dialog-list-container::-webkit-scrollbar-thumb:hover {
+    background: var(--color-accent);
+}
+
+.dialog-item {
+    background: var(--background-fill-primary);
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    margin: 6px 0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    position: relative;
+}
+
+.dialog-item:hover {
+    background: var(--background-fill-secondary);
+    border-color: var(--color-accent);
+    transform: translateX(2px);
+}
+
+.dialog-item.selected {
+    background: var(--color-accent) !important;
+    color: white !important;
+    border-color: var(--color-accent) !important;
+    box-shadow: 0 2px 8px rgba(0, 123, 255, 0.3);
+}
+
+.dialog-item-title {
+    font-weight: 500;
+    font-size: 13px;
+    margin-bottom: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.dialog-item-date {
+    font-size: 11px;
+    opacity: 0.7;
+    font-weight: 400;
+}
+
+.dialog-item.selected .dialog-item-date {
+    opacity: 0.9;
+}
+
+.empty-dialogs {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--body-text-color-subdued);
+    font-style: italic;
+    border: 2px dashed var(--border-color-primary);
+    border-radius: var(--radius-lg);
+    margin: 12px 0;
+}
+
+/* Radio Dialog List Styles */
+.dialog-radio fieldset {
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+.dialog-radio legend {
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    color: var(--body-text-color) !important;
+    margin-bottom: 12px !important;
+}
+
+.dialog-radio .wrap {
+    gap: 8px !important;
+    padding: 8px 0 !important;
+}
+
+.dialog-radio label {
+    background: var(--background-fill-primary) !important;
+    border: 1px solid var(--border-color-primary) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 12px 16px !important;
+    margin: 4px 0 !important;
+    cursor: pointer !important;
+    transition: all 0.2s ease !important;
+    display: flex !important;
+    align-items: center !important;
+    font-size: 13px !important;
+    line-height: 1.4 !important;
+}
+
+.dialog-radio label:hover {
+    background: var(--background-fill-secondary) !important;
+    border-color: var(--color-accent) !important;
+    transform: translateX(2px) !important;
+}
+
+.dialog-radio input[type="radio"]:checked + span {
+    background: var(--color-accent) !important;
+    color: white !important;
+    border-color: var(--color-accent) !important;
+    box-shadow: 0 2px 8px rgba(0, 123, 255, 0.3) !important;
+}
+
+.dialog-radio input[type="radio"] {
+    width: 16px !important;
+    height: 16px !important;
+    margin-right: 12px !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+}
+
+.dialog-radio .wrap {
+    max-height: 400px !important;
+    overflow-y: auto !important;
+}
+
+.dialog-radio .wrap::-webkit-scrollbar {
+    width: 6px;
+}
+
+.dialog-radio .wrap::-webkit-scrollbar-track {
+    background: var(--background-fill-secondary);
+    border-radius: 3px;
+}
+
+.dialog-radio .wrap::-webkit-scrollbar-thumb {
+    background: var(--border-color-primary);
+    border-radius: 3px;
+}
+
+.dialog-radio .wrap::-webkit-scrollbar-thumb:hover {
+    background: var(--color-accent);
+}
+
 @keyframes slideIn {
     from {
         opacity: 0;
@@ -165,6 +324,28 @@ function disable_btn() {
             document.getElementById('component-35').disabled = true
             setTimeout(() => { document.getElementById('component-35').disabled = false }, 180000);
         }
+    }
+}
+
+function selectDialog(sessionId) {
+    console.log('Selecting dialog:', sessionId);
+    
+    // Обновляем визуальное выделение
+    document.querySelectorAll('.dialog-item').forEach(item => {
+        item.classList.remove('selected');
+    });
+    
+    const selected = document.querySelector(`[data-session-id="${sessionId}"]`);
+    if (selected) {
+        selected.classList.add('selected');
+    }
+    
+    // Находим скрытый dropdown и обновляем его
+    const dropdown = document.querySelector('#dialog-selector select');
+    if (dropdown) {
+        dropdown.value = sessionId;
+        const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+        dropdown.dispatchEvent(changeEvent);
     }
 }
 """
@@ -201,6 +382,45 @@ function toggleUploadButton(model) {
 JS_CHATGPT_STYLE: str = """
 function() {
     console.log('ChatGPT style loading...');
+    
+    // Определяем глобальную функцию selectDialog если она еще не существует
+    if (typeof window.selectDialog === 'undefined') {
+        window.selectDialog = function(sessionId) {
+            console.log('Selecting dialog:', sessionId);
+            
+            // Обновляем визуальное выделение
+            document.querySelectorAll('.dialog-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            const selected = document.querySelector(`[data-session-id="${sessionId}"]`);
+            if (selected) {
+                selected.classList.add('selected');
+            }
+            
+            // Находим скрытый dropdown и обновляем его
+            const dropdown = document.querySelector('#hidden-dialog-selector select') ||
+                           document.querySelector('#hidden-dialog-selector') ||
+                           Array.from(document.querySelectorAll('select')).find(sel => {
+                               const parent = sel.closest('[id*="hidden-dialog-selector"]');
+                               return parent !== null;
+                           }) ||
+                           Array.from(document.querySelectorAll('select')).find(sel => 
+                               Array.from(sel.options).some(opt => opt.value === sessionId)
+                           );
+            
+            if (dropdown) {
+                dropdown.value = sessionId;
+                const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+                dropdown.dispatchEvent(changeEvent);
+                const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+                dropdown.dispatchEvent(inputEvent);
+            } else {
+                console.error('Dropdown not found for session:', sessionId);
+            }
+        };
+        console.log('selectDialog function defined globally');
+    }
 }
 """
 
