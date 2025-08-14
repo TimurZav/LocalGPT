@@ -242,7 +242,7 @@ class MultiAgentManager:
                 
                 # Извлечение источников из retrieved_docs
                 import re
-                sources = re.findall(r'Document - (.*?) ↓', retrieved_docs)
+                sources = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
                 
                 rag_result = AgentResult(
                     agent_type="rag",
