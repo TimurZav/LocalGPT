@@ -1162,9 +1162,85 @@ class UIManager:
         Получает список сохраненных диалогов для UI.
         """
         dialogs = self.analytics_manager.get_all_dialogs()
-        choices = [(f"{dialog['title']} ({dialog['updated_at'][:16]})", dialog['session_id']) 
-                  for dialog in dialogs]
+        choices = []
+        for dialog in dialogs:
+            # Укорачиваем заголовок для лучшего отображения
+            title = dialog['title']
+            if len(title) > 40:
+                title = title[:40] + "..."
+            date_str = dialog['updated_at'][:16].replace('T', ' ')
+            display_name = f"💬 {title}"
+            choices.append((display_name, dialog['session_id']))
         return gr.update(choices=choices)
+    
+    def get_dialog_list_html(self) -> str:
+        """
+        Создает HTML-список диалогов в стиле ChatGPT.
+        """
+        dialogs = self.analytics_manager.get_all_dialogs()
+        if not dialogs:
+            return "<div style='text-align: center; padding: 20px; color: #6b6b6b;'>Нет сохраненных диалогов</div>"
+        
+        html_items = []
+        for dialog in dialogs[:20]:  # Показываем только последние 20
+            title = dialog['title']
+            if len(title) > 35:
+                title = title[:35] + "..."
+            
+            date_str = dialog['updated_at'][:16].replace('T', ' ')
+            session_id = dialog['session_id']
+            
+            html_items.append(f"""
+            <div class="dialog-item" data-session-id="{session_id}" onclick="selectDialog('{session_id}')">
+                <div style="font-weight: 500; font-size: 13px; margin-bottom: 4px; 
+                           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    💬 {title}
+                </div>
+                <div style="font-size: 11px; opacity: 0.7;">
+                    {date_str}
+                </div>
+            </div>
+            """)
+        
+        script_js = """
+        function selectDialog(sessionId) {
+            console.log('Клик по диалогу:', sessionId);
+            
+            const dropdown = document.querySelector('#dialog-selector select');
+            console.log('Найден dropdown:', !!dropdown);
+            
+            if (dropdown) {
+                console.log('Текущее значение:', dropdown.value);
+                console.log('Опции:', Array.from(dropdown.options).map(o => o.value));
+                
+                dropdown.value = sessionId;
+                console.log('Новое значение:', dropdown.value);
+                
+                const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+                dropdown.dispatchEvent(changeEvent);
+                console.log('Событие change отправлено');
+            }
+            
+            // Обновляем визуальное выделение
+            document.querySelectorAll('.dialog-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            const selected = document.querySelector('[data-session-id="' + sessionId + '"]');
+            if (selected) {
+                selected.classList.add('selected');
+            }
+        }
+        """
+        
+        return f"""
+        <div style="max-height: 400px; overflow-y: auto;">
+            {''.join(html_items)}
+        </div>
+        <script>
+        {script_js}
+        </script>
+        """
     
     def load_selected_dialog(self, selected_dialog_id: str) -> tuple:
         """
@@ -1252,21 +1328,48 @@ class UIManager:
             with gr.Tab("Чат"):
                 with gr.Row():
                     # Боковая панель для истории диалогов
-                    with gr.Column(scale=1, min_width=250):
-                        with gr.Group():
-                            gr.Markdown("### 💬 История диалогов")
-                            new_dialog_btn = gr.Button("🆕 Новый диалог", variant="primary")
-                            
-                            dialog_selector = gr.Dropdown(
-                                choices=[],
-                                value=None,
-                                label="Выбрать диалог",
-                                interactive=True,
-                                allow_custom_value=False
+                    with gr.Column(scale=1, min_width=280, elem_classes=["sidebar-container"]):
+                        # Заголовок сайдбара
+                        gr.HTML('''
+                        <div class="sidebar-header">
+                            <span style="font-size: 20px;">💬</span>
+                            <span>История диалогов</span>
+                        </div>
+                        ''')
+                        
+                        # Кнопка нового диалога
+                        new_dialog_btn = gr.Button(
+                            f"{CHATGPT_ICONS['new_chat']} Новый чат", 
+                            variant="primary", 
+                            elem_classes=["new-dialog-btn"],
+                            elem_id="new-dialog"
+                        )
+                        
+                        # Стильный список диалогов
+                        dialog_list_html = gr.HTML(
+                            value=self.get_dialog_list_html(),
+                            elem_classes=["dialog-list"]
+                        )
+                        
+                        # Dropdown для обработки событий
+                        dialog_selector = gr.Dropdown(
+                            choices=[],
+                            value=None,
+                            label="Или выберите из списка:",
+                            interactive=True,
+                            allow_custom_value=False,
+                            elem_classes=["dialog-selector"],
+                            visible=True,
+                            elem_id="dialog-selector"
+                        )
+                        
+                        # Кнопки действий
+                        with gr.Row():
+                            delete_dialog_btn = gr.Button(
+                                f"{CHATGPT_ICONS['delete']} Удалить", 
+                                variant="secondary",
+                                elem_classes=["delete-btn"]
                             )
-                            
-                            with gr.Row():
-                                delete_dialog_btn = gr.Button("🗑️ Удалить", variant="secondary", size="sm")
                     
                     # Основная область чата
                     with gr.Column(scale=3):
@@ -1513,18 +1616,23 @@ class UIManager:
             )
 
             # Обновление списка диалогов при загрузке
+            def update_dialog_display():
+                return self.get_dialog_choices(), self.get_dialog_list_html()
+            
             demo.load(
-                fn=self.get_dialog_choices,
-                outputs=dialog_selector
+                fn=update_dialog_display,
+                outputs=[dialog_selector, dialog_list_html]
             )
             
             # Новый диалог
+            def new_dialog_with_update():
+                chat, choices = self.create_new_dialog()
+                html = self.get_dialog_list_html()
+                return chat, choices, html, str(uuid.uuid4())
+                
             new_dialog_btn.click(
-                fn=self.create_new_dialog,
-                outputs=[chatbot, dialog_selector]
-            ).success(
-                fn=lambda: str(uuid.uuid4()),
-                outputs=current_session
+                fn=new_dialog_with_update,
+                outputs=[chatbot, dialog_selector, dialog_list_html, current_session]
             )
             
             # Выбор диалога
@@ -1532,13 +1640,21 @@ class UIManager:
                 fn=self.load_selected_dialog,
                 inputs=dialog_selector,
                 outputs=[chatbot, current_session]
+            ).success(
+                fn=self.get_dialog_list_html,
+                outputs=dialog_list_html
             )
             
             # Удаление диалога
+            def delete_dialog_with_update(selected_id):
+                chat, selected, choices = self.delete_selected_dialog(selected_id)
+                html = self.get_dialog_list_html()
+                return chat, choices, html, selected
+                
             delete_dialog_btn.click(
-                fn=self.delete_selected_dialog,
+                fn=delete_dialog_with_update,
                 inputs=dialog_selector,
-                outputs=[chatbot, dialog_selector, dialog_selector]
+                outputs=[chatbot, dialog_selector, dialog_list_html, dialog_selector]
             )
 
             # Pressing Enter
@@ -1562,8 +1678,8 @@ class UIManager:
                 inputs=chatbot,
                 queue=False
             ).success(
-                fn=self.get_dialog_choices,
-                outputs=dialog_selector
+                fn=update_dialog_display,
+                outputs=[dialog_selector, dialog_list_html]
             )
 
             # Like
@@ -1584,13 +1700,10 @@ class UIManager:
 
             # Clear history
             clear.click(
-                fn=self.create_new_dialog,
-                outputs=[chatbot, dialog_selector],
+                fn=new_dialog_with_update,
+                outputs=[chatbot, dialog_selector, dialog_list_html, current_session],
                 queue=False,
                 js=JS
-            ).success(
-                fn=lambda: str(uuid.uuid4()),
-                outputs=current_session
             )
 
             # Stop generation
@@ -1614,7 +1727,7 @@ class UIManager:
                     message_login,
                     files_selected
                 ],
-                js=LOCAL_STORAGE
+                js=f"{LOCAL_STORAGE}; {JS_CHATGPT_STYLE}();"
             )
 
         demo.queue(max_size=128, api_open=False, default_concurrency_limit=5)

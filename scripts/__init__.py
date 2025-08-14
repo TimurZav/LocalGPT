@@ -55,12 +55,22 @@ MAX_NEW_TOKENS: int = 1500
 IP_ADDRESS = f"http://{socket.gethostbyname(socket.gethostname())}:8001"
 
 ABS_PATH: str = os.path.dirname(os.path.abspath(__file__))
+
+# ChatGPT-style icons (using Unicode emojis as fallback)
+CHATGPT_ICONS = {
+    'new_chat': '💬',
+    'delete': '🗑️', 
+    'edit': '✏️',
+    'more': '⋯',
+    'history': '📚',
+    'settings': '⚙️'
+}
 DATA_DIR: str = "../data"
 if not os.path.exists(DATA_DIR):
     os.mkdir(DATA_DIR)
 DB_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/chroma")
 DATABASE_URL: str = f"sqlite:///{DB_DIR}/users_data.db"
-DATABASE_DATA_URL: str = "mysql+pymysql://myuser:mypassword@localhost:3306/mydatabase"
+DATABASE_DATA_URL: str = "postgresql://admin:admin@localhost:5432/mydatabase"
 MODELS_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/models")
 LOGGING_DIR: str = os.path.join(ABS_PATH, f"{DATA_DIR}/logging")
 if not os.path.exists(LOGGING_DIR):
@@ -86,10 +96,98 @@ os.chmod(FILES_DIR, 0o0777)
 os.environ['GRADIO_TEMP_DIR'] = FILES_DIR
 
 BLOCK_CSS: str = """
+/* Simple UI with ChatGPT style */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+* {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+/* Sidebar */
+.sidebar-container {
+    background: var(--background-fill-primary);
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    box-shadow: var(--shadow-drop);
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding: 8px 12px;
+    color: #1a1a1a;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.new-dialog-btn {
+    background: #10a37f !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 12px 16px !important;
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    width: 100% !important;
+    margin-bottom: 12px !important;
+    transition: all 0.2s ease !important;
+    box-shadow: none !important;
+}
+
+.new-dialog-btn:hover {
+    background: #0d8a6b !important;
+    transform: translateY(-1px);
+}
+
+.dialog-item {
+    background: var(--background-fill-primary);
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-lg);
+    padding: 12px;
+    margin: 4px 0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    animation: slideIn 0.2s ease-out;
+}
+
+.dialog-item:hover {
+    background: var(--background-fill-secondary);
+    border-color: var(--color-accent);
+}
+
+.dialog-item.selected {
+    background: var(--color-accent) !important;
+    color: white !important;
+    border-color: var(--color-accent) !important;
+}
+
+.delete-btn {
+    background: #ef4444 !important;
+    color: white !important;
+    border: none !important;
+}
+
+.delete-btn:hover {
+    background: #dc2626 !important;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
 
 @media (min-width: 1024px) {
     .modal-container.svelte-7knbu5 {
-        max-width: 50% !important
+        max-width: 50% !important;
     }
 }
 
@@ -138,6 +236,12 @@ function toggleUploadButton(model) {
         uploadButton.classList.remove('enable');
     }
     return [model]
+}
+"""
+
+JS_CHATGPT_STYLE: str = """
+function() {
+    console.log('ChatGPT style loading...');
 }
 """
 
