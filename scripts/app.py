@@ -1173,74 +1173,6 @@ class UIManager:
             choices.append((display_name, dialog['session_id']))
         return gr.update(choices=choices)
     
-    def get_dialog_list_html(self) -> str:
-        """
-        Создает HTML-список диалогов в стиле ChatGPT.
-        """
-        dialogs = self.analytics_manager.get_all_dialogs()
-        if not dialogs:
-            return "<div style='text-align: center; padding: 20px; color: #6b6b6b;'>Нет сохраненных диалогов</div>"
-        
-        html_items = []
-        for dialog in dialogs[:20]:  # Показываем только последние 20
-            title = dialog['title']
-            if len(title) > 35:
-                title = title[:35] + "..."
-            
-            date_str = dialog['updated_at'][:16].replace('T', ' ')
-            session_id = dialog['session_id']
-            
-            html_items.append(f"""
-            <div class="dialog-item" data-session-id="{session_id}" onclick="selectDialog('{session_id}')">
-                <div style="font-weight: 500; font-size: 13px; margin-bottom: 4px; 
-                           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                    💬 {title}
-                </div>
-                <div style="font-size: 11px; opacity: 0.7;">
-                    {date_str}
-                </div>
-            </div>
-            """)
-        
-        script_js = """
-        function selectDialog(sessionId) {
-            console.log('Клик по диалогу:', sessionId);
-            
-            const dropdown = document.querySelector('#dialog-selector select');
-            console.log('Найден dropdown:', !!dropdown);
-            
-            if (dropdown) {
-                console.log('Текущее значение:', dropdown.value);
-                console.log('Опции:', Array.from(dropdown.options).map(o => o.value));
-                
-                dropdown.value = sessionId;
-                console.log('Новое значение:', dropdown.value);
-                
-                const changeEvent = new Event('change', { bubbles: true, cancelable: true });
-                dropdown.dispatchEvent(changeEvent);
-                console.log('Событие change отправлено');
-            }
-            
-            // Обновляем визуальное выделение
-            document.querySelectorAll('.dialog-item').forEach(item => {
-                item.classList.remove('selected');
-            });
-            
-            const selected = document.querySelector('[data-session-id="' + sessionId + '"]');
-            if (selected) {
-                selected.classList.add('selected');
-            }
-        }
-        """
-        
-        return f"""
-        <div style="max-height: 400px; overflow-y: auto;">
-            {''.join(html_items)}
-        </div>
-        <script>
-        {script_js}
-        </script>
-        """
     
     def load_selected_dialog(self, selected_dialog_id: str) -> tuple:
         """
@@ -1345,11 +1277,6 @@ class UIManager:
                             elem_id="new-dialog"
                         )
                         
-                        # Стильный список диалогов
-                        dialog_list_html = gr.HTML(
-                            value=self.get_dialog_list_html(),
-                            elem_classes=["dialog-list"]
-                        )
                         
                         # Dropdown для обработки событий
                         dialog_selector = gr.Dropdown(
@@ -1616,23 +1543,19 @@ class UIManager:
             )
 
             # Обновление списка диалогов при загрузке
-            def update_dialog_display():
-                return self.get_dialog_choices(), self.get_dialog_list_html()
-            
             demo.load(
-                fn=update_dialog_display,
-                outputs=[dialog_selector, dialog_list_html]
+                fn=self.get_dialog_choices,
+                outputs=dialog_selector
             )
             
             # Новый диалог
             def new_dialog_with_update():
                 chat, choices = self.create_new_dialog()
-                html = self.get_dialog_list_html()
-                return chat, choices, html, str(uuid.uuid4())
+                return chat, choices, str(uuid.uuid4())
                 
             new_dialog_btn.click(
                 fn=new_dialog_with_update,
-                outputs=[chatbot, dialog_selector, dialog_list_html, current_session]
+                outputs=[chatbot, dialog_selector, current_session]
             )
             
             # Выбор диалога
@@ -1640,21 +1563,17 @@ class UIManager:
                 fn=self.load_selected_dialog,
                 inputs=dialog_selector,
                 outputs=[chatbot, current_session]
-            ).success(
-                fn=self.get_dialog_list_html,
-                outputs=dialog_list_html
             )
             
             # Удаление диалога
             def delete_dialog_with_update(selected_id):
                 chat, selected, choices = self.delete_selected_dialog(selected_id)
-                html = self.get_dialog_list_html()
-                return chat, choices, html, selected
+                return chat, choices, selected
                 
             delete_dialog_btn.click(
                 fn=delete_dialog_with_update,
                 inputs=dialog_selector,
-                outputs=[chatbot, dialog_selector, dialog_list_html, dialog_selector]
+                outputs=[chatbot, dialog_selector, dialog_selector]
             )
 
             # Pressing Enter
@@ -1678,8 +1597,8 @@ class UIManager:
                 inputs=chatbot,
                 queue=False
             ).success(
-                fn=update_dialog_display,
-                outputs=[dialog_selector, dialog_list_html]
+                fn=self.get_dialog_choices,
+                outputs=dialog_selector
             )
 
             # Like
@@ -1701,7 +1620,7 @@ class UIManager:
             # Clear history
             clear.click(
                 fn=new_dialog_with_update,
-                outputs=[chatbot, dialog_selector, dialog_list_html, current_session],
+                outputs=[chatbot, dialog_selector, current_session],
                 queue=False,
                 js=JS
             )
