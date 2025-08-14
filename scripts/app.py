@@ -1107,7 +1107,7 @@ class UIManager:
                   interface to the name of the selected model. The second update sets the interactive status
                   of the chat interface to True if the selected model is not the "llm" model, or False otherwise.
         """
-        if selected_model == MODELS[1]:
+        if selected_model in MODELS[1:]:
             return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=True)
         return gr.update(label=f"LLM: {selected_model}"), gr.update(interactive=True)
 
@@ -1154,7 +1154,7 @@ class UIManager:
                             value=self.prompt_manager.mode,
                             show_label=False
                         )
-                        is_use_tools = gr.Checkbox(label="Проверка данных с базы")
+                        is_use_tools = gr.Checkbox(label="Проверка данных с базы", value=True)
 
                     with gr.Column():
                         model = gr.Dropdown(
