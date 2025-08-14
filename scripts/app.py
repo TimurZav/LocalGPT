@@ -1360,12 +1360,7 @@ class UIManager:
                         with gr.Row(equal_height=True):
                             with gr.Column():
                                 # Заголовок сайдбара
-                                gr.HTML('''
-                                <div class="sidebar-header">
-                                    <span style="font-size: 20px;">💬</span>
-                                    <span>История диалогов</span>
-                                </div>
-                                ''')
+                                gr.HTML("""<h2><center>💬 История диалогов</center></h2>""")
                                 
                                 # Кнопка нового диалога
                                 new_dialog_btn = gr.Button(
@@ -1380,6 +1375,7 @@ class UIManager:
                                     value=None,
                                     show_label=False,
                                     interactive=True,
+                                    container=False,
                                     elem_classes=["dialog-radio"]
                                 )
                                 
@@ -1391,7 +1387,7 @@ class UIManager:
                                 )
                     
                     # Основная область чата
-                    with gr.Column(scale=2.8):
+                    with gr.Column(scale=3):
                         with gr.Row(equal_height=True):
                             with gr.Column():
                                 collection_radio = gr.Radio(
@@ -1460,7 +1456,7 @@ class UIManager:
                             value="",
                             multiselect=True
                         )
-                        delete = gr.Button("🧹 Удалить", variant="primary")
+                        delete = gr.Button("🧹 Удалить", variant="primary", elem_classes=["delete-btn"])
 
             with gr.Tab("Настройки", visible=False) as settings_tab:
                 with gr.Column():
