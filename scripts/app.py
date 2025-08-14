@@ -77,6 +77,8 @@ class SystemPromptManager:
 class AnalyticsManager:
     def __init__(self):
         self.tiny_db: TinyDB = TinyDB(f'{QUESTIONS}/tiny_db.json', indent=4, ensure_ascii=False)
+        # Отдельная база для истории диалогов
+        self.dialogs_db: TinyDB = TinyDB(f'{QUESTIONS}/dialogs.json', indent=4, ensure_ascii=False)
 
     def get_analytics(self) -> pd.DataFrame:
         """
@@ -94,6 +96,55 @@ class AnalyticsManager:
         except KeyError:
             return pd.DataFrame(self.tiny_db.all())
 
+    def save_dialog_session(self, session_id: str, messages: List[dict], title: str = None) -> None:
+        """
+        Сохранить диалоговую сессию с уникальным ID.
+        """
+        if not messages:
+            return
+            
+        # Генерируем заголовок на основе первого сообщения пользователя
+        if not title:
+            first_user_msg = next((msg["content"] for msg in messages if msg["role"] == "user"), "")
+            title = (first_user_msg[:50] + "...") if len(first_user_msg) > 50 else first_user_msg
+            
+        dialog_data = {
+            'session_id': session_id,
+            'title': title,
+            'messages': messages,
+            'created_at': str(datetime.now()),
+            'updated_at': str(datetime.now())
+        }
+        
+        # Проверяем, существует ли уже диалог с таким ID
+        existing = self.dialogs_db.search(where('session_id') == session_id)
+        if existing:
+            self.dialogs_db.update(dialog_data, where('session_id') == session_id)
+        else:
+            self.dialogs_db.insert(dialog_data)
+    
+    def get_all_dialogs(self) -> List[dict]:
+        """
+        Получить список всех сохраненных диалогов.
+        """
+        dialogs = self.dialogs_db.all()
+        # Сортируем по дате обновления (самые новые первые)
+        return sorted(dialogs, key=lambda x: x.get('updated_at', ''), reverse=True)
+    
+    def load_dialog_session(self, session_id: str) -> Optional[List[dict]]:
+        """
+        Загрузить конкретную диалоговую сессию.
+        """
+        result = self.dialogs_db.search(where('session_id') == session_id)
+        return result[0]['messages'] if result else None
+    
+    def delete_dialog_session(self, session_id: str) -> bool:
+        """
+        Удалить диалоговую сессию.
+        """
+        removed = self.dialogs_db.remove(where('session_id') == session_id)
+        return len(removed) > 0
+        
     def update_message_analytics(self, messages: List[dict], analyse=None):
         """
         Updates or inserts analytics data for the latest message in the database.
@@ -1095,7 +1146,58 @@ class UIManager:
             self.analytics_manager,
             self.document_manager  # Pass document_manager for multi-agent system
         )
+        
+        # Текущая сессия диалога
+        self.current_session_id: str = str(uuid.uuid4())
 
+    def create_new_dialog(self) -> tuple:
+        """
+        Создает новый диалог.
+        """
+        self.current_session_id = str(uuid.uuid4())
+        return [], self.get_dialog_choices()
+    
+    def get_dialog_choices(self) -> gr.update:
+        """
+        Получает список сохраненных диалогов для UI.
+        """
+        dialogs = self.analytics_manager.get_all_dialogs()
+        choices = [(f"{dialog['title']} ({dialog['updated_at'][:16]})", dialog['session_id']) 
+                  for dialog in dialogs]
+        return gr.update(choices=choices)
+    
+    def load_selected_dialog(self, selected_dialog_id: str) -> tuple:
+        """
+        Загружает выбранный диалог.
+        """
+        if not selected_dialog_id:
+            return [], self.current_session_id
+            
+        messages = self.analytics_manager.load_dialog_session(selected_dialog_id)
+        if messages:
+            self.current_session_id = selected_dialog_id
+            return messages, selected_dialog_id
+        return [], self.current_session_id
+    
+    def delete_selected_dialog(self, selected_dialog_id: str) -> tuple:
+        """
+        Удаляет выбранный диалог.
+        """
+        if selected_dialog_id and self.analytics_manager.delete_dialog_session(selected_dialog_id):
+            gr.Info("Диалог удален")
+            # Если удаляем текущий диалог, создаем новый
+            if selected_dialog_id == self.current_session_id:
+                self.current_session_id = str(uuid.uuid4())
+                return [], None, self.get_dialog_choices()
+        return [], selected_dialog_id, self.get_dialog_choices()
+    
+    def auto_save_dialog(self, messages: List[dict]):
+        """
+        Автоматически сохраняет диалог после каждого сообщения.
+        """
+        if messages and len(messages) > 0:
+            self.analytics_manager.save_dialog_session(self.current_session_id, messages)
+    
     @staticmethod
     def update_chat_label(selected_model: str) -> tuple:
         """
@@ -1145,59 +1247,80 @@ class UIManager:
             uid = gr.State(None)
             scores = gr.State(None)
             local_data = gr.JSON({}, visible=False)
+            current_session = gr.State(self.current_session_id)
 
             with gr.Tab("Чат"):
-                with gr.Row(equal_height=True):
-                    with gr.Column():
-                        collection_radio = gr.Radio(
-                            choices=MODES,
-                            value=self.prompt_manager.mode,
-                            show_label=False
-                        )
-                        is_use_tools = gr.Checkbox(label="Проверка данных с базы", value=True)
-
-                    with gr.Column():
-                        model = gr.Dropdown(
-                            choices=MODELS,
-                            value=MODELS[0],
-                            interactive=True,
-                            show_label=True,
-                            label="Выбор моделей"
-                        )
-
                 with gr.Row():
-                    with gr.Column(scale=10):
-                        chatbot = gr.Chatbot(
-                            label=f"LLM: {model.value}",
-                            height=500,
-                            type="messages",
-                            show_copy_button=True,
-                            avatar_images=(
-                                AVATAR_USER,
-                                AVATAR_BOT
+                    # Боковая панель для истории диалогов
+                    with gr.Column(scale=1, min_width=250):
+                        with gr.Group():
+                            gr.Markdown("### 💬 История диалогов")
+                            new_dialog_btn = gr.Button("🆕 Новый диалог", variant="primary")
+                            
+                            dialog_selector = gr.Dropdown(
+                                choices=[],
+                                value=None,
+                                label="Выбрать диалог",
+                                interactive=True,
+                                allow_custom_value=False
                             )
-                        )
+                            
+                            with gr.Row():
+                                delete_dialog_btn = gr.Button("🗑️ Удалить", variant="secondary", size="sm")
+                    
+                    # Основная область чата
+                    with gr.Column(scale=3):
+                        with gr.Row(equal_height=True):
+                            with gr.Column():
+                                collection_radio = gr.Radio(
+                                    choices=MODES,
+                                    value=self.prompt_manager.mode,
+                                    show_label=False
+                                )
+                                is_use_tools = gr.Checkbox(label="Проверка данных с базы", value=True)
 
-                with gr.Row(equal_height=True):
-                    with gr.Column(scale=10):
-                        msg = gr.MultimodalTextbox(
-                            label="Отправить сообщение",
-                            placeholder="👉 Напишите запрос",
-                            sources=["upload", "microphone"],
-                            show_label=False
-                        )
+                            with gr.Column():
+                                model = gr.Dropdown(
+                                    choices=MODELS,
+                                    value=MODELS[0],
+                                    interactive=True,
+                                    show_label=True,
+                                    label="Выбор моделей"
+                                )
 
-                with gr.Row(elem_id="buttons"):
-                    like = gr.Button(value="👍 Понравилось")
-                    dislike = gr.Button(value="👎 Не понравилось")
-                    stop_btn = gr.Button(value="🛑 Остановить")
-                    clear = gr.Button(value="🗑️ Очистить")
+                        with gr.Row():
+                            with gr.Column(scale=10):
+                                chatbot = gr.Chatbot(
+                                    label=f"LLM: {model.value}",
+                                    height=500,
+                                    type="messages",
+                                    show_copy_button=True,
+                                    avatar_images=(
+                                        AVATAR_USER,
+                                        AVATAR_BOT
+                                    )
+                                )
 
-                with gr.Row():
-                    gr.Markdown(
-                        "<center>Ассистент может допускать ошибки, поэтому рекомендуем проверять важную информацию. "
-                        "Ответы также не являются призывом к действию</center>"
-                    )
+                        with gr.Row(equal_height=True):
+                            with gr.Column(scale=10):
+                                msg = gr.MultimodalTextbox(
+                                    label="Отправить сообщение",
+                                    placeholder="👉 Напишите запрос",
+                                    sources=["upload", "microphone"],
+                                    show_label=False
+                                )
+
+                        with gr.Row(elem_id="buttons"):
+                            like = gr.Button(value="👍 Понравилось")
+                            dislike = gr.Button(value="👎 Не понравилось")
+                            stop_btn = gr.Button(value="🛑 Остановить")
+                            clear = gr.Button(value="🗑️ Очистить")
+
+                        with gr.Row():
+                            gr.Markdown(
+                                "<center>Ассистент может допускать ошибки, поэтому рекомендуем проверять важную информацию. "
+                                "Ответы также не являются призывом к действию</center>"
+                            )
 
             with gr.Tab("Документы", visible=False) as documents_tab:
                 with gr.Row():
@@ -1389,6 +1512,35 @@ class UIManager:
                 outputs=[files_selected]
             )
 
+            # Обновление списка диалогов при загрузке
+            demo.load(
+                fn=self.get_dialog_choices,
+                outputs=dialog_selector
+            )
+            
+            # Новый диалог
+            new_dialog_btn.click(
+                fn=self.create_new_dialog,
+                outputs=[chatbot, dialog_selector]
+            ).success(
+                fn=lambda: str(uuid.uuid4()),
+                outputs=current_session
+            )
+            
+            # Выбор диалога
+            dialog_selector.change(
+                fn=self.load_selected_dialog,
+                inputs=dialog_selector,
+                outputs=[chatbot, current_session]
+            )
+            
+            # Удаление диалога
+            delete_dialog_btn.click(
+                fn=self.delete_selected_dialog,
+                inputs=dialog_selector,
+                outputs=[chatbot, dialog_selector, dialog_selector]
+            )
+
             # Pressing Enter
             click_msg_event = msg.submit(
                 fn=self.message_manager.add_user_message,
@@ -1405,6 +1557,13 @@ class UIManager:
                 inputs=[model, chatbot, collection_radio, retrieved_docs, scores, is_use_tools, uid],
                 outputs=chatbot,
                 queue=True
+            ).success(
+                fn=self.auto_save_dialog,
+                inputs=chatbot,
+                queue=False
+            ).success(
+                fn=self.get_dialog_choices,
+                outputs=dialog_selector
             )
 
             # Like
@@ -1425,11 +1584,13 @@ class UIManager:
 
             # Clear history
             clear.click(
-                fn=lambda: None,
-                inputs=None,
-                outputs=chatbot,
+                fn=self.create_new_dialog,
+                outputs=[chatbot, dialog_selector],
                 queue=False,
                 js=JS
+            ).success(
+                fn=lambda: str(uuid.uuid4()),
+                outputs=current_session
             )
 
             # Stop generation
