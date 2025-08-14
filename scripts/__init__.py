@@ -123,47 +123,6 @@ BLOCK_CSS: str = """
     font-size: 14px;
 }
 
-.new-dialog-btn {
-    background: #10a37f !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 8px !important;
-    padding: 12px 16px !important;
-    font-weight: 500 !important;
-    font-size: 14px !important;
-    width: 100% !important;
-    margin-bottom: 12px !important;
-    transition: all 0.2s ease !important;
-    box-shadow: none !important;
-}
-
-.new-dialog-btn:hover {
-    background: #0d8a6b !important;
-    transform: translateY(-1px);
-}
-
-.dialog-item {
-    background: var(--background-fill-primary);
-    border: 1px solid var(--border-color-primary);
-    border-radius: var(--radius-lg);
-    padding: 12px;
-    margin: 4px 0;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    animation: slideIn 0.2s ease-out;
-}
-
-.dialog-item:hover {
-    background: var(--background-fill-secondary);
-    border-color: var(--color-accent);
-}
-
-.dialog-item.selected {
-    background: var(--color-accent) !important;
-    color: white !important;
-    border-color: var(--color-accent) !important;
-}
-
 .delete-btn {
     background: #ef4444 !important;
     color: white !important;

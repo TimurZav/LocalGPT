@@ -1260,43 +1260,41 @@ class UIManager:
             with gr.Tab("Чат"):
                 with gr.Row():
                     # Боковая панель для истории диалогов
-                    with gr.Column(scale=1, min_width=280, elem_classes=["sidebar-container"]):
-                        # Заголовок сайдбара
-                        gr.HTML('''
-                        <div class="sidebar-header">
-                            <span style="font-size: 20px;">💬</span>
-                            <span>История диалогов</span>
-                        </div>
-                        ''')
-                        
-                        # Кнопка нового диалога
-                        new_dialog_btn = gr.Button(
-                            f"{CHATGPT_ICONS['new_chat']} Новый чат", 
-                            variant="primary", 
-                            elem_classes=["new-dialog-btn"],
-                            elem_id="new-dialog"
-                        )
-                        
-                        
-                        # Dropdown для обработки событий
-                        dialog_selector = gr.Dropdown(
-                            choices=[],
-                            value=None,
-                            label="Или выберите из списка:",
-                            interactive=True,
-                            allow_custom_value=False,
-                            elem_classes=["dialog-selector"],
-                            visible=True,
-                            elem_id="dialog-selector"
-                        )
-                        
-                        # Кнопки действий
-                        with gr.Row():
-                            delete_dialog_btn = gr.Button(
-                                f"{CHATGPT_ICONS['delete']} Удалить", 
-                                variant="secondary",
-                                elem_classes=["delete-btn"]
-                            )
+                    with gr.Column(scale=1, elem_classes=["sidebar-container"]):
+                        with gr.Row(equal_height=True):
+                            with gr.Column():
+                                # Заголовок сайдбара
+                                gr.HTML('''
+                                <div class="sidebar-header">
+                                    <span style="font-size: 20px;">💬</span>
+                                    <span>История диалогов</span>
+                                </div>
+                                ''')
+                                
+                                # Кнопка нового диалога
+                                new_dialog_btn = gr.Button(
+                                    f"{CHATGPT_ICONS['new_chat']} Новый чат", 
+                                    variant="primary"
+                                )
+                                
+                                
+                                # Dropdown для обработки событий
+                                dialog_selector = gr.Dropdown(
+                                    choices=[],
+                                    value=None,
+                                    label="Или выберите из списка:",
+                                    interactive=True,
+                                    allow_custom_value=False,
+                                    visible=True
+                                )
+                                
+                                # Кнопки действий
+                                with gr.Row():
+                                    delete_dialog_btn = gr.Button(
+                                        f"{CHATGPT_ICONS['delete']} Удалить", 
+                                        variant="secondary",
+                                        elem_classes=["delete-btn"]
+                                    )
                     
                     # Основная область чата
                     with gr.Column(scale=3):
