@@ -254,13 +254,6 @@ BLOCK_CSS: str = """
     transform: translateX(2px) !important;
 }
 
-.dialog-radio input[type="radio"]:checked + span {
-    background: var(--color-accent) !important;
-    color: white !important;
-    border-color: var(--color-accent) !important;
-    box-shadow: 0 2px 8px rgba(0, 123, 255, 0.3) !important;
-}
-
 .dialog-radio input[type="radio"] {
     width: 16px !important;
     height: 16px !important;
