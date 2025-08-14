@@ -1384,15 +1384,14 @@ class UIManager:
                                 )
                                 
                                 # Кнопки действий
-                                with gr.Row():
-                                    delete_dialog_btn = gr.Button(
-                                        f"{CHATGPT_ICONS['delete']} Удалить", 
-                                        variant="secondary",
-                                        elem_classes=["delete-btn"]
-                                    )
+                                delete_dialog_btn = gr.Button(
+                                    f"{CHATGPT_ICONS['delete']} Удалить", 
+                                    variant="secondary",
+                                    elem_classes=["delete-btn"]
+                                )
                     
                     # Основная область чата
-                    with gr.Column(scale=3):
+                    with gr.Column(scale=2.8):
                         with gr.Row(equal_height=True):
                             with gr.Column():
                                 collection_radio = gr.Radio(

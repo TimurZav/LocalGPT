@@ -251,7 +251,6 @@ BLOCK_CSS: str = """
 .dialog-radio label:hover {
     background: var(--background-fill-secondary) !important;
     border-color: var(--color-accent) !important;
-    transform: translateX(2px) !important;
 }
 
 .dialog-radio input[type="radio"] {
