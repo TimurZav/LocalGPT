@@ -880,7 +880,7 @@ class MessageManager:
                 partial_text += "\n\n\n".join(sources_text)
             elif scores:
                 partial_text += sources_text[0]
-            history[-1]["content"] += partial_text
+            history[-1]["content"] = partial_text
         return history
 
 
@@ -1082,7 +1082,7 @@ class UIManager:
                             value=self.prompt_manager.mode,
                             show_label=False
                         )
-                        is_use_tools = gr.Checkbox(label="Использовать функции")
+                        is_use_tools = gr.Checkbox(label="Проверка данных с базы")
 
                     with gr.Column():
                         model = gr.Dropdown(
