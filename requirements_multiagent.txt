@@ -1,0 +1,8 @@
+# Дополнительные зависимости для многоагентной системы
+langgraph>=0.0.55
+langgraph-checkpoint>=1.0.2
+
+# Если нужно обновить существующие
+langchain-core>=0.1.45
+langchain-community>=0.0.29
+psycopg2-binary>=2.9.5  # Для PostgreSQL подключения

@@ -885,10 +885,11 @@ class MessageManager:
 
 
 class ModelManager:
-    def __init__(self, message_manager, prompt_manager, analytics_manager):
+    def __init__(self, message_manager, prompt_manager, analytics_manager, document_manager=None):
         self.message_manager: MessageManager = message_manager
         self.prompt_manager: SystemPromptManager = prompt_manager
         self.analytics_manager: AnalyticsManager = analytics_manager
+        self.document_manager = document_manager
 
         # Initialize SQL database connection
         self.sql_db = SQLDatabase.from_uri(
@@ -898,7 +899,7 @@ class ModelManager:
 
         # Creating a prompt to store the conversation history
         self.system = """You are an agent designed to interact with a SQL database.
-        Given an input question, create a syntactically correct MySQL query to run, then look at the results of the query and return the answer.
+        Given an input question, create a syntactically correct PostgreSQL query to run, then look at the results of the query and return the answer.
         You can order the results by a relevant column to return the most interesting examples in the database.
         Never query for all the columns from a specific table, only ask for the relevant columns given the question.
         You have access to tools for interacting with the database.
@@ -924,6 +925,16 @@ class ModelManager:
             agent_type="tool-calling",
             verbose=True
         )
+
+        # Initialize Multi-Agent Manager
+        self.multi_agent_manager = None
+        if self.document_manager:
+            from multi_agent_manager import MultiAgentManager
+            self.multi_agent_manager = MultiAgentManager(
+                document_manager=self.document_manager,
+                database_url=DATABASE_DATA_URL,
+                model_name="openai/gpt-4o-mini"
+            )
 
     def update_model(self, model_name: str):
         """
@@ -953,20 +964,14 @@ class ModelManager:
         uid: str
     ) -> AsyncGenerator[list[dict], None]:
         """
-        Generates a response based on user input, context, and retrieved documents.
-
-        This function orchestrates the process of generating a response by interacting
-        with the chat completion generator.
-        The response is built incrementally, updating the conversation history as tokens are received.
-        In case of an error (e.g., due to large context size), an error message is appended to the response.
-        Once complete, source file references are appended to the final output.
+        Generates a response using multi-agent system or traditional approach.
 
         :param model: Model of the list.
         :param history: List of conversation pairs (user input and bot responses).
         :param mode: Operation mode, which influences the use of context in responses.
         :param retrieved_docs: Relevant documents retrieved to help answer the user query.
         :param scores: List of scores associated with retrieved documents for source filtering.
-        :param is_use_tools: A boolean indicating whether to enable tool usage (auto) or not (none).
+        :param is_use_tools: A boolean indicating whether to enable multi-agent system.
         :param uid: Unique identifier for the current user session, useful for logging and tracking.
         :return: Yields updated conversation history after each token generated, and the final response with sources.
         """
@@ -977,9 +982,61 @@ class ModelManager:
 
         logger.info(f"Beginning response generation [uid - {uid}]")
 
-        # Update the model only if it has changed
-        # self.update_model(model)
+        # Get the last user message
+        last_user_message = history[-1].get("content", "") if history else ""
 
+        # Use Multi-Agent System if enabled and available
+        if is_use_tools and self.multi_agent_manager:
+            try:
+                logger.info(f"Using multi-agent system [uid - {uid}]")
+                result = self.multi_agent_manager.process_query_sync(
+                    query=last_user_message,
+                    thread_id=uid
+                )
+                
+                response_text = result["answer"]
+                files = result["sources"]
+                
+                # Добавим информацию о типе запроса в ответ
+                query_type_info = ""
+                if result["query_type"] == "hybrid":
+                    query_type_info = "\n\n*Использованы данные из документов и базы данных*"
+                elif result["query_type"] == "rag_only":
+                    query_type_info = "\n\n*Использованы данные из документов*"
+                elif result["query_type"] == "sql_only":
+                    query_type_info = "\n\n*Использованы данные из базы данных*"
+                
+                response_text += query_type_info
+                
+                logger.info(f"Multi-agent response completed: type={result['query_type']} [uid - {uid}]")
+                
+            except Exception as e:
+                logger.error(f"Error in multi-agent system, falling back to traditional approach: {e}")
+                # Fallback to traditional approach
+                response_text, files = await self._traditional_approach(
+                    history, mode, retrieved_docs, uid
+                )
+        else:
+            # Traditional approach
+            logger.info(f"Using traditional approach [uid - {uid}]")
+            response_text, files = await self._traditional_approach(
+                history, mode, retrieved_docs, uid
+            )
+
+        logger.info(f"Response generation completed [uid - {uid}]")
+        history.append({"role": "assistant", "content": response_text})
+        yield history
+
+        # Add source references if we have files from retrieved_docs
+        if not files and retrieved_docs:
+            files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
+        
+        yield self.message_manager.add_source_references(history, scores, files, "")
+        self.message_manager.queue -= 1
+        _ = self.analytics_manager.update_message_analytics(history)
+
+    async def _traditional_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str) -> tuple[str, list]:
+        """Traditional approach for response generation"""
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
 
         # Use full context if provided
@@ -990,25 +1047,34 @@ class ModelManager:
         last_message = self.message_manager.prepare_context_message(history, retrieved_docs, mode)
         langchain_messages.append(HumanMessage(content=last_message))
 
-        if is_use_tools:
-            # Using an agent with tools
-            result = self.agent_executor.invoke({
-                "input": langchain_messages
-            })
-            # Extract the actual response by removing think tags and their content
-            response_text = re.sub(r'<think>.*?</think>', '', result["output"], flags=re.DOTALL).strip()
+        # Check if we should use SQL agent for database queries
+        if self._should_use_sql_agent(last_message):
+            try:
+                result = self.agent_executor.invoke({
+                    "input": last_message
+                })
+                response_text = re.sub(r'<think>.*?</think>', '', result["output"], flags=re.DOTALL).strip()
+                files.append("database")  # Add database as source
+            except Exception as e:
+                logger.error(f"SQL agent failed, using LLM: {e}")
+                response = self.llm.invoke(langchain_messages)
+                response_text = re.sub(r'<think>.*?</think>', '', response.content, flags=re.DOTALL).strip()
         else:
             # Use the model directly
             response = self.llm.invoke(langchain_messages)
             response_text = re.sub(r'<think>.*?</think>', '', response.content, flags=re.DOTALL).strip()
 
-        logger.info(f"Response generation completed [uid - {uid}]")
-        history.append({"role": "assistant", "content": response_text})
-        yield history
+        return response_text, files
 
-        yield self.message_manager.add_source_references(history, scores, files, response_text)
-        self.message_manager.queue -= 1
-        _ = self.analytics_manager.update_message_analytics(history)
+    def _should_use_sql_agent(self, message: str) -> bool:
+        """Determine if we should use SQL agent based on message content"""
+        sql_keywords = [
+            "сколько", "количество", "кто работает", "список сотрудников", 
+            "проекты", "задачи", "оборудование", "инциденты", "пользователи",
+            "статистика", "данные", "отчет", "база данных"
+        ]
+        message_lower = message.lower()
+        return any(keyword in message_lower for keyword in sql_keywords)
 
 
 class UIManager:
@@ -1016,13 +1082,18 @@ class UIManager:
         self.message_manager: MessageManager = MessageManager()
         self.prompt_manager: SystemPromptManager = SystemPromptManager()
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
-        self.model_manager: ModelManager = ModelManager(
-            self.message_manager, self.prompt_manager, self.analytics_manager
-        )
         self.audio_manager: AudioManager = AudioManager()
         self.document_manager: DocumentManager = DocumentManager()
         self.vm_manager: VMManager = VMManager()
         self.auth_manager: AuthManager = AuthManager(self.document_manager)
+        
+        # Initialize ModelManager with document_manager for multi-agent system
+        self.model_manager: ModelManager = ModelManager(
+            self.message_manager, 
+            self.prompt_manager, 
+            self.analytics_manager,
+            self.document_manager  # Pass document_manager for multi-agent system
+        )
 
     @staticmethod
     def update_chat_label(selected_model: str) -> tuple:
