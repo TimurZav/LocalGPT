@@ -393,6 +393,26 @@ class DocumentManager:
         self.morph_vocab: MorphVocab = MorphVocab()
         self.morph_tagger: NewsMorphTagger = NewsMorphTagger(NewsEmbedding())
         self.cache: dict = {}
+        self.log_file_path: str = ""  # Path to the log file
+        self.log_entries: List[str] = []  # Cached log entries
+
+    def load_log_file(self, file_path: str) -> None:
+        """
+        Loads log entries from a .txt file.
+        
+        :param file_path: Path to the log file
+        """
+        try:
+            self.log_file_path = file_path
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Split by lines and filter out empty lines
+            self.log_entries = [line.strip() for line in content.split('\n') if line.strip()]
+            logger.info(f"Loaded {len(self.log_entries)} log entries from {file_path}")
+        except Exception as e:
+            logger.error(f"Error loading log file {file_path}: {e}")
+            self.log_entries = []
 
     def initialize_database(self) -> Chroma:
         """
@@ -569,33 +589,40 @@ class DocumentManager:
 
     def search_docs(self, sentence: str) -> List[str]:
         """
-        Поиск чанков, содержащих как можно больше ключевых слов, начиная с полного набора и уменьшая до 2 слов.
-        Также включает соседние чанки (например, если чанк на индексе 9, то берём ещё чанки на 8 и 10).
+        Legacy method - returns all logs for backward compatibility.
+        Use get_all_logs() for clearer intent.
 
-        :param sentence: Предложение или ключевое слово для поиска.
-        :return: Список текстов чанков, содержащих максимальное количество ключевых слов.
+        :param sentence: Предложение или ключевое слово (не используется).
+        :return: Все загруженные логи.
         """
-        # Инициализация YAKE для извлечения ключевых слов
-        kw_extractor = KeywordExtractor(lan="ru", n=1, top=10)
-        keywords_with_scores = kw_extractor.extract_keywords(sentence)
-        keywords = [kw[0].lower() for kw in keywords_with_scores]
-        sentence_words = re.sub(r'[^\w\s]', '', sentence).lower().split()
-        matched_keywords = [kw for kw in sentence_words if kw in keywords]
-
-        sorted_keywords = self.lemmatize(matched_keywords)
-        documents = self.db.get()["documents"]
-        lemmatized_documents = self.lemmatize(documents)
-
-        results = []
-        for num_keywords in range(len(sorted_keywords)):
-            current_keywords = sorted_keywords[num_keywords:]
-            for i, chunk in enumerate(documents):
-                if all(keyword in lemmatized_documents[i].split() for keyword in current_keywords) \
-                        and chunk not in results:
-                    results.append(chunk)
-            if results:
-                break
-        return results
+        return self.log_entries if self.log_entries else []
+    
+    def get_rag_context(self, query: str, k_documents: int = 6) -> Tuple[str, List[str]]:
+        """
+        Get RAG context from documents for internal processing.
+        
+        :param query: User query for RAG search
+        :param k_documents: Number of documents to retrieve
+        :return: Tuple of (clean_context, sources)
+        """
+        if not self.db:
+            return "", []
+            
+        docs = self.db.similarity_search_with_score(query, k_documents)
+        if not docs:
+            return "", []
+            
+        # Clean context without HTML for internal processing
+        import re
+        clean_chunks = []
+        sources = []
+        
+        for doc in docs:
+            clean_chunks.append(f"Score: {round(doc[1], 2)}\nText: {doc[0].page_content}")
+            sources.append(os.path.basename(doc[0].metadata["source"]))
+        
+        clean_context = "\n\n".join(clean_chunks)
+        return clean_context, sources
 
     def retrieve_documents(
         self,
@@ -605,19 +632,14 @@ class DocumentManager:
         uid: str
     ) -> Tuple[str, list]:
         """
-        Retrieves relevant documents from the database based on the user's most recent message
-        and formats them for display, including document URLs and similarity scores.
-
-        This function performs a similarity search on the user's latest message within a specific
-        database collection, and returns a formatted string containing the retrieved documents
-        along with their similarity scores. If there are no relevant documents or conditions are
-        not met, an appropriate message and an empty list are returned.
+        Retrieves relevant documents using RAG search for UI display.
+        Only shows RAG results from documents, logs are handled separately.
 
         :param history: The conversation history as a list of message pairs (user, bot responses).
         :param collection_radio: The selected collection mode for document retrieval.
         :param k_documents: The number of top documents to retrieve based on similarity.
         :param uid: The unique identifier for the current session, used for logging.
-        :return: A tuple with a formatted string of retrieved documents and a list of their similarity scores.
+        :return: A tuple with formatted RAG documents and similarity scores (for UI display only).
         """
         if (
             collection_radio not in [MODES[0], MODES[1]]
@@ -627,31 +649,41 @@ class DocumentManager:
             return "Появятся после задавания вопросов", []
 
         last_user_message = history[-1].get("content")
-        if collection_radio == MODES[0]:
+        
+        # RAG search for documents - always show in UI if database is available
+        if self.db:
             docs = self.db.similarity_search_with_score(last_user_message, k_documents)
-            scores: list = []
-            data = defaultdict(str)
+            if docs:
+                scores: list = []
+                data = defaultdict(str)
 
-            for doc in docs:
-                url = (
-                    f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
-                    rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
-                )
-                document: str = f"Document - {url} ↓"
-                score: float = round(doc[1], 2)
-                scores.append(score)
-                data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
+                for doc in docs:
+                    url = (
+                        f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
+                        rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
+                    )
+                    document: str = f"Document - {url} ↓"
+                    score: float = round(doc[1], 2)
+                    scores.append(score)
+                    data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
 
-            list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
-            logger.info(f"Retrieved context from database for collection '{collection_radio}' [uid - {uid}]")
-        else:
-            list_data = self.search_docs(last_user_message)
-            scores = [0] * len(list_data)
-
-        if not list_data:
-            return "No documents found in the database", scores
-
-        return "\n\n\n".join(list_data), scores
+                list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
+                logger.info(f"Retrieved {len(docs)} RAG documents for UI display [uid - {uid}]")
+                
+                return "\n\n\n".join(list_data), scores
+            else:
+                return "No relevant documents found", []
+        
+        # If no database available, show appropriate message
+        return "Документы не загружены в RAG систему", []
+    
+    def get_all_logs(self) -> List[str]:
+        """
+        Returns all log entries without any filtering.
+        
+        :return: List of all log entries
+        """
+        return self.log_entries if self.log_entries else []
 
     def list_ingested_documents(self):
         """
@@ -693,6 +725,23 @@ class DocumentManager:
         except Exception as e:
             logger.error(f"Error during document deletion: {e}")
             return gr.update(choices=[])
+    
+    def load_log_file_ui(self, file):
+        """
+        UI handler for loading log files.
+        
+        :param file: Gradio file object
+        :return: Status message
+        """
+        if file is None:
+            return "Файл не выбран"
+        
+        try:
+            self.load_log_file(file.name)
+            return f"✅ Загружено {len(self.log_entries)} записей из {os.path.basename(file.name)}"
+        except Exception as e:
+            logger.error(f"Error loading log file: {e}")
+            return f"❌ Ошибка загрузки файла: {str(e)}"
 
 
 class AudioManager:
@@ -942,40 +991,8 @@ class ModelManager:
         self.analytics_manager: AnalyticsManager = analytics_manager
         self.document_manager = document_manager
 
-        # Initialize SQL database connection
-        self.sql_db = SQLDatabase.from_uri(
-            database_uri=DATABASE_DATA_URL,
-            sample_rows_in_table_info=3
-        )
-
-        # Creating a prompt to store the conversation history
-        self.system = """You are an agent designed to interact with a SQL database.
-        Given an input question, create a syntactically correct PostgreSQL query to run, then look at the results of the query and return the answer.
-        You can order the results by a relevant column to return the most interesting examples in the database.
-        Never query for all the columns from a specific table, only ask for the relevant columns given the question.
-        You have access to tools for interacting with the database.
-        Only use the given tools. Only use the information returned by the tools to construct your final answer.
-        Only use the results of the given SQL query to generate your final answer and return that.
-        You MUST double check your query before executing it. If you get an error while executing a query then you should stop!
-
-        DO NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.) to the database.
-        Only create an SQL statement ONCE!"""
-
-        self.prompt = ChatPromptTemplate.from_messages(
-        [("system", self.system), ("human", "{input}"), MessagesPlaceholder(variable_name="agent_scratchpad")]
-        )  
-
         # Initializing the base model
         self.llm = ChatOpenRouter(model_name=MODELS[0])
-
-        # Creating an SQL agent with support for streaming output and memory
-        self.agent_executor = create_sql_agent(
-            self.llm,
-            db=self.sql_db,
-            prompt=self.prompt,
-            agent_type="tool-calling",
-            verbose=True
-        )
 
         # Initialize Multi-Agent Manager
         self.multi_agent_manager = None
@@ -983,26 +1000,18 @@ class ModelManager:
             from multi_agent_manager import MultiAgentManager
             self.multi_agent_manager = MultiAgentManager(
                 document_manager=self.document_manager,
-                database_url=DATABASE_DATA_URL,
                 model_name=MODELS[0]
             )
 
     def update_model(self, model_name: str):
         """
-        Updates the LLM and agent model only if the model has changed.
+        Updates the LLM model only if the model has changed.
         
         :param model_name: The name of the model to use.
         :return: None.
         """
         if model_name != self.llm.model_name:
             self.llm = ChatOpenRouter(model_name=model_name)
-            self.agent_executor = create_sql_agent(
-                self.llm,
-                db=self.sql_db,
-                prompt=self.prompt,
-                agent_type="tool-calling",
-                verbose=True
-            )
 
     async def generate_response_stream(
         self,
@@ -1036,11 +1045,33 @@ class ModelManager:
         # Get the last user message
         last_user_message = history[-1].get("content", "") if history else ""
 
-        # Use Multi-Agent System if enabled and available
-        if is_use_tools and self.multi_agent_manager:
+        # Use log-based approach
+        logger.info(f"Using log-based RAG approach [uid - {uid}]")
+        response_text, _ = await self._log_based_approach(
+            history, mode, retrieved_docs, uid, model, is_use_tools
+        )
+
+        logger.info(f"Response generation completed [uid - {uid}]")
+        history.append({"role": "assistant", "content": response_text})
+        yield history
+        
+        self.message_manager.queue -= 1
+        _ = self.analytics_manager.update_message_analytics(history)
+
+    async def _log_based_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str, model: str, use_log_search: bool) -> tuple[str, list]:
+        """Use MultiAgentManager for hybrid RAG+Logs approach"""
+        
+        # Update model if changed
+        self.update_model(model)
+        
+        # Get the last user message
+        last_user_message = history[-1].get("content", "") if history else ""
+        
+        # Use Multi-Agent System if logs are enabled and available
+        if use_log_search and self.multi_agent_manager and self.document_manager.log_entries:
             try:
-                logger.info(f"Using multi-agent system with model {model} [uid - {uid}]")
-                # Обновляем модель в многоагентной системе
+                logger.info(f"Using multi-agent system (RAG+Logs) with model {model} [uid - {uid}]")
+                # Update model in multi-agent system
                 self.multi_agent_manager.update_model(model)
                 
                 result = self.multi_agent_manager.process_query_sync(
@@ -1051,82 +1082,67 @@ class ModelManager:
                 response_text = result["answer"]
                 files = result["sources"]
                 
-                # Добавим информацию о типе запроса в ответ
+                # Add information about query type
                 query_type_info = ""
                 if result["query_type"] == "hybrid":
-                    query_type_info = "\n\n*Использованы данные из документов и базы данных*"
+                    query_type_info = "\n\n*Использованы данные из документов и логов*"
                 elif result["query_type"] == "rag_only":
                     query_type_info = "\n\n*Использованы данные из документов*"
-                elif result["query_type"] == "sql_only":
-                    query_type_info = "\n\n*Использованы данные из базы данных*"
+                elif result["query_type"] == "logs_only":
+                    query_type_info = "\n\n*Использованы данные из логов*"
                 
                 response_text += query_type_info
                 
                 logger.info(f"Multi-agent response completed: type={result['query_type']} [uid - {uid}]")
                 
+                return response_text, files
+                
             except Exception as e:
-                logger.error(f"Error in multi-agent system, falling back to traditional approach: {e}")
-                # Fallback to traditional approach
-                response_text, _ = await self._traditional_approach(
-                    history, mode, retrieved_docs, uid, model
-                )
-        else:
-            # Traditional approach
-            logger.info(f"Using traditional approach [uid - {uid}]")
-            response_text, _ = await self._traditional_approach(
-                history, mode, retrieved_docs, uid, model
-            )
-
-        logger.info(f"Response generation completed [uid - {uid}]")
-        history.append({"role": "assistant", "content": response_text})
-        yield history
+                logger.error(f"Error in multi-agent system, falling back to simple approach: {e}")
         
-        self.message_manager.queue -= 1
-        _ = self.analytics_manager.update_message_analytics(history)
-
-    async def _traditional_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str, model: str) -> tuple[str, list]:
-        """Traditional approach for response generation"""
+        # Fallback: simple approach without multi-agent system
+        logger.info(f"Using simple approach [uid - {uid}]")
+        
         files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
-
-        # Update model if changed
-        self.update_model(model)
-
-        # Use full context if provided
         recent_history = self.message_manager.get_recent_history(history)
         langchain_messages = self.message_manager.prepare_chat_history(recent_history)
-
-        # Add the user's last message from history
         last_message = self.message_manager.prepare_context_message(history, retrieved_docs, mode)
         langchain_messages.append(HumanMessage(content=last_message))
-
-        # Check if we should use SQL agent for database queries
-        if self._should_use_sql_agent(last_message):
-            try:
-                result = self.agent_executor.invoke({
-                    "input": last_message
-                })
-                response_text = re.sub(r'<think>.*?</think>', '', result["output"], flags=re.DOTALL).strip()
-                files.append("database")  # Add database as source
-            except Exception as e:
-                logger.error(f"SQL agent failed, using LLM: {e}")
-                response = self.llm.invoke(langchain_messages)
-                response_text = re.sub(r'<think>.*?</think>', '', response.content, flags=re.DOTALL).strip()
-        else:
-            # Use the model directly
+        
+        # Simple hybrid context (fallback)
+        context_parts = []
+        
+        # Get RAG context
+        rag_context, rag_sources = self.document_manager.get_rag_context(
+            last_user_message, 
+            k_documents=6
+        )
+        if rag_context:
+            context_parts.append(f"Контекст из документов:\n{rag_context}")
+            files.extend(rag_sources)
+        
+        # Add logs if enabled
+        if use_log_search and self.document_manager.log_entries:
+            all_logs = "\n".join(self.document_manager.log_entries)
+            context_parts.append(f"Все логи системы:\n{all_logs}")
+            files.append("logs")
+        
+        # Combine context
+        if context_parts:
+            full_context = "\n\n" + "\n\n".join(context_parts)
+            enhanced_message = f"{last_message}{full_context}"
+            langchain_messages[-1] = HumanMessage(content=enhanced_message)
+        
+        # Generate response
+        try:
             response = self.llm.invoke(langchain_messages)
             response_text = re.sub(r'<think>.*?</think>', '', response.content, flags=re.DOTALL).strip()
+        except Exception as e:
+            logger.error(f"Error generating response: {e}")
+            response_text = f"Ошибка при генерации ответа: {str(e)}"
 
         return response_text, files
 
-    def _should_use_sql_agent(self, message: str) -> bool:
-        """Determine if we should use SQL agent based on message content"""
-        sql_keywords = [
-            "сколько", "количество", "кто работает", "список сотрудников", 
-            "проекты", "задачи", "оборудование", "инциденты", "пользователи",
-            "статистика", "данные", "отчет", "база данных"
-        ]
-        message_lower = message.lower()
-        return any(keyword in message_lower for keyword in sql_keywords)
 
 
 class UIManager:
@@ -1395,7 +1411,7 @@ class UIManager:
                                     value=self.prompt_manager.mode,
                                     show_label=False
                                 )
-                                is_use_tools = gr.Checkbox(label="Проверка данных с базы", value=True)
+                                is_use_tools = gr.Checkbox(label="Использовать логи (+ RAG документы)", value=True)
 
                             with gr.Column():
                                 model = gr.Dropdown(
@@ -1443,11 +1459,19 @@ class UIManager:
             with gr.Tab("Документы", visible=False) as documents_tab:
                 with gr.Row():
                     with gr.Column(scale=3):
-                        upload_files = gr.Files(
-                            label="Загрузка документов",
-                            file_count="multiple"
-                        )
-                        file_warning = gr.Markdown("Фрагменты ещё не загружены!")
+                        with gr.Tab("Документы"):
+                            upload_files = gr.Files(
+                                label="Загрузка документов",
+                                file_count="multiple"
+                            )
+                            file_warning = gr.Markdown("Фрагменты ещё не загружены!")
+                        
+                        with gr.Tab("Логи"):
+                            log_file_upload = gr.File(
+                                label="Загрузить лог файл (.txt)",
+                                file_types=[".txt"]
+                            )
+                            log_status = gr.Markdown("Лог файл не загружен")
 
                     with gr.Column(scale=7):
                         files_selected = gr.Dropdown(
@@ -1621,6 +1645,14 @@ class UIManager:
             ).success(
                 fn=self.document_manager.list_ingested_documents,
                 outputs=files_selected
+            )
+
+            # Upload log file
+            log_file_upload.upload(
+                fn=self.document_manager.load_log_file_ui,
+                inputs=[log_file_upload],
+                outputs=[log_status],
+                queue=True
             )
 
             # Delete documents from db

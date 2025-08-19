@@ -1,5 +1,5 @@
 """
-Многоагентная система для обработки гибридных запросов RAG + SQL
+Многоагентная система для обработки гибридных запросов RAG + Logs
 Использует LangGraph для оркестрации агентов
 """
 
@@ -10,8 +10,6 @@ from enum import Enum
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_community.utilities import SQLDatabase
-from langchain_community.agent_toolkits import create_sql_agent
 from openrouter import ChatOpenRouter
 from __init__ import MODELS
 
@@ -25,7 +23,7 @@ logger = logging.getLogger(__name__)
 class QueryType(Enum):
     """Типы запросов"""
     RAG_ONLY = "rag_only"
-    SQL_ONLY = "sql_only" 
+    LOGS_ONLY = "logs_only" 
     HYBRID = "hybrid"
     UNCLEAR = "unclear"
 
@@ -45,7 +43,7 @@ class GraphState(TypedDict):
     original_query: str
     query_type: str
     rag_result: Optional[AgentResult]
-    sql_result: Optional[AgentResult]
+    logs_result: Optional[AgentResult]
     final_answer: Optional[str]
     sources: List[str]
     metadata: Dict[str, Any]
@@ -53,14 +51,10 @@ class GraphState(TypedDict):
 class MultiAgentManager:
     """Менеджер многоагентной системы"""
     
-    def __init__(self, document_manager, database_url: str, model_name: str = MODELS[0]):
+    def __init__(self, document_manager, model_name: str = MODELS[0]):
         self.document_manager = document_manager
         self.model_name = model_name
         self.llm = ChatOpenRouter(model_name=model_name)
-        
-        # Инициализация SQL агента
-        self.sql_db = SQLDatabase.from_uri(database_url, sample_rows_in_table_info=3)
-        self.sql_agent = self._create_sql_agent()
         
         # Создание графа агентов
         self.graph = self._create_agent_graph()
@@ -70,17 +64,18 @@ class MultiAgentManager:
             ("system", """Ты классификатор запросов. Определи тип запроса:
 
             RAG_ONLY - если вопрос касается только информации из документов (политики, планы, процедуры, техническая документация)
-            SQL_ONLY - если вопрос касается только данных из базы (пользователи, проекты, задачи, оборудование, инциденты)  
-            HYBRID - если вопрос требует данных И из документов, И из базы данных
+            LOGS_ONLY - если вопрос касается только логов и событий системы (ошибки, предупреждения, события, проблемы, сбои)  
+            HYBRID - если вопрос требует данных И из документов, И из логов
             UNCLEAR - если неясно, какие источники нужны
 
             Примеры:
             - "Какие требования к паролям?" → RAG_ONLY
-            - "Кто работает в отделе разработки?" → SQL_ONLY  
-            - "Какие проекты по безопасности ведутся и какие политики действуют?" → HYBRID
+            - "Какие ошибки были вчера?" → LOGS_ONLY
+            - "Что произошло с сервером?" → LOGS_ONLY
+            - "Какие политики безопасности нарушались и какие инциденты происходили?" → HYBRID
             - "Привет" → UNCLEAR
 
-            Отвечай только одним словом: RAG_ONLY, SQL_ONLY, HYBRID или UNCLEAR"""),
+            Отвечай только одним словом: RAG_ONLY, LOGS_ONLY, HYBRID или UNCLEAR"""),
             ("human", "{query}")
         ])
         
@@ -93,61 +88,51 @@ class MultiAgentManager:
             ("human", "Контекст из документов:\n{context}\n\nВопрос: {query}")
         ])
         
+        self.logs_agent_prompt = ChatPromptTemplate.from_messages([
+            ("system", """Ты агент анализа логов. Тебе предоставлены ВСЕ логи системы для анализа.
+            
+            Инструкции:
+            1. Анализируй все предоставленные логи полностью
+            2. Ищи паттерны, ошибки, события, связанные с вопросом пользователя
+            3. Группируй похожие события вместе
+            4. Указывай временные метки для важных событий
+            5. Если в логах нет информации для ответа, так и скажи
+            6. Предоставляй детальный анализ со статистикой, если возможно
+            
+            Будь максимально полезным и аналитическим."""),
+            ("human", "Все логи системы:\n{logs}\n\nВопрос для анализа: {query}")
+        ])
+        
         self.integration_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Ты интеграционный агент. Объедини результаты RAG и SQL агентов в единый ответ.
+            ("system", """Ты интеграционный агент. Твоя задача - создать полный и связный ответ, объединив:
+            1. Результат RAG поиска по документам (релевантные чанки из docx)
+            2. Результат анализа всех логов системы
 
-            Правила:
-            1. Используй ВСЮ информацию из обоих источников
-            2. Структурируй ответ логично 
-            3. Укажи источники данных
-            4. Если результаты противоречат друг другу, укажи это
-            5. Если один из агентов не нашел информации, используй результат другого
+            Правила интеграции:
+            1. Сначала используй информацию из документов для теоретической части ответа
+            2. Затем дополни практической информацией из логов (события, ошибки, статистика)
+            3. Создай связный нарратив, объединив оба источника
+            4. Если результаты противоречат друг другу, укажи это и объясни различия
+            5. Если один источник не содержит информации, полноценно используй другой
+            6. Всегда указывай, откуда взята информация
 
-            Формат ответа:
-            [Основная информация]
+            Структура ответа:
+            [Основной интегрированный ответ с использованием обоих источников]
+            
+            ## Источники данных
+            - Документы: [список файлов, если есть]
+            - Системные логи: [краткая характеристика логов]"""),
+            ("human", """Вопрос пользователя: {query}
 
-            ## Источники
-            - Документы: [список файлов]
-            - База данных: [типы данных]"""),
-            ("human", """Вопрос: {query}
-
-            Результат RAG агента:
+            Информация из документов (RAG):
             {rag_result}
 
-            Результат SQL агента:  
-            {sql_result}
+            Информация из всех логов системы:  
+            {logs_result}
 
-            Объедини эти результаты в полный ответ на вопрос.""")
+            Создай интегрированный ответ, объединив информацию из документов и логов.""")
         ])
 
-    def _create_sql_agent(self):
-        """Создание SQL агента"""
-        system_prompt = """You are an agent designed to interact with a SQL database.
-        Given an input question, create a syntactically correct PostgreSQL query to run, then look at the results of the query and return the answer.
-        You can order the results by a relevant column to return the most interesting examples in the database.
-        Never query for all the columns from a specific table, only ask for the relevant columns given the question.
-        You have access to tools for interacting with the database.
-        Only use the given tools. Only use the information returned by the tools to construct your final answer.
-        You MUST double check your query before executing it. If you get an error while executing a query then you should stop!
-
-        DO NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.) to the database.
-        Only create an SQL statement ONCE!
-        
-        Always provide specific data from the database, not just general statements."""
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad")
-        ])
-
-        return create_sql_agent(
-            self.llm,
-            db=self.sql_db,
-            prompt=prompt,
-            agent_type="tool-calling",
-            verbose=True
-        )
 
     def _create_agent_graph(self):
         """Создание графа агентов"""
@@ -156,7 +141,7 @@ class MultiAgentManager:
         # Добавление узлов
         workflow.add_node("classifier", self._classify_query)
         workflow.add_node("rag_agent", self._run_rag_agent)
-        workflow.add_node("sql_agent", self._run_sql_agent)
+        workflow.add_node("logs_agent", self._run_logs_agent)
         workflow.add_node("integrator", self._integrate_results)
         
         # Определение маршрутов
@@ -167,7 +152,7 @@ class MultiAgentManager:
             self._route_query,
             {
                 "rag_only": "rag_agent",
-                "sql_only": "sql_agent",
+                "logs_only": "logs_agent",
                 "hybrid": "rag_agent",  # Для гибридных сначала RAG
                 "unclear": END
             }
@@ -177,13 +162,13 @@ class MultiAgentManager:
             "rag_agent",
             self._after_rag,
             {
-                "to_sql": "sql_agent",
+                "to_logs": "logs_agent",
                 "to_integrator": "integrator",
                 "end": END
             }
         )
         
-        workflow.add_edge("sql_agent", "integrator")
+        workflow.add_edge("logs_agent", "integrator")
         workflow.add_edge("integrator", END)
         
         return workflow.compile(checkpointer=MemorySaver())
@@ -193,8 +178,6 @@ class MultiAgentManager:
         if model_name != self.model_name:
             self.model_name = model_name
             self.llm = ChatOpenRouter(model_name=model_name)
-            # Пересоздаем SQL агента с новой моделью
-            self.sql_agent = self._create_sql_agent()
             logger.info(f"Multi-agent system updated to use model: {model_name}")
 
     def _classify_query(self, state: GraphState) -> GraphState:
@@ -219,45 +202,36 @@ class MultiAgentManager:
             return state
 
     def _run_rag_agent(self, state: GraphState) -> GraphState:
-        """Выполнение RAG агента"""
+        """Выполнение RAG агента для поиска по документам"""
         try:
             query = state["original_query"]
             
-            # Получение контекста из документов
-            retrieved_docs, scores = self.document_manager.retrieve_documents(
-                history=[{"role": "user", "content": query}],
-                collection_radio="RAG",  # Предполагаем RAG режим
-                k_documents=6,
-                uid="multi_agent"
-            )
+            # Получение контекста из документов через RAG поиск (напрямую)
+            rag_context, sources = self.document_manager.get_rag_context(query, k_documents=6)
             
-            if not retrieved_docs or retrieved_docs == "Появятся после задавания вопросов":
+            if not rag_context:
                 rag_result = AgentResult(
                     agent_type="rag",
                     success=False,
                     content="Информация не найдена в документах",
                     sources=[],
-                    metadata={"scores": []}
+                    metadata={"context_length": 0}
                 )
             else:
-                # Генерация ответа на основе контекста
+                # Генерация ответа на основе контекста документов
                 response = self.llm.invoke(
                     self.rag_agent_prompt.format_messages(
-                        context=retrieved_docs,
+                        context=rag_context,
                         query=query
                     )
                 )
-                
-                # Извлечение источников из retrieved_docs
-                import re
-                sources = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
                 
                 rag_result = AgentResult(
                     agent_type="rag",
                     success=True,
                     content=response.content,
                     sources=sources,
-                    metadata={"scores": scores, "context_length": len(retrieved_docs)}
+                    metadata={"context_length": len(rag_context), "sources_count": len(sources)}
                 )
             
             state["rag_result"] = rag_result
@@ -276,36 +250,51 @@ class MultiAgentManager:
             )
             return state
 
-    def _run_sql_agent(self, state: GraphState) -> GraphState:
-        """Выполнение SQL агента"""
+    def _run_logs_agent(self, state: GraphState) -> GraphState:
+        """Выполнение агента логов"""
         try:
             query = state["original_query"]
             
-            # Выполнение SQL агента
-            result = self.sql_agent.invoke({"input": query})
+            # Получение всех логов
+            if not self.document_manager.log_entries:
+                logs_result = AgentResult(
+                    agent_type="logs",
+                    success=False,
+                    content="Логи не загружены в систему",
+                    sources=[],
+                    metadata={}
+                )
+            else:
+                # Генерация ответа на основе всех логов
+                all_logs = "\n".join(self.document_manager.log_entries)
+                
+                response = self.llm.invoke(
+                    self.logs_agent_prompt.format_messages(
+                        logs=all_logs,
+                        query=query
+                    )
+                )
+                
+                logs_result = AgentResult(
+                    agent_type="logs",
+                    success=True,
+                    content=response.content,
+                    sources=["logs"],
+                    metadata={
+                        "total_logs": len(self.document_manager.log_entries)
+                    }
+                )
             
-            # Очистка результата от <think> тегов
-            import re
-            clean_output = re.sub(r'<think>.*?</think>', '', result["output"], flags=re.DOTALL).strip()
-            
-            sql_result = AgentResult(
-                agent_type="sql",
-                success=True,
-                content=clean_output,
-                sources=["database"],
-                metadata={"raw_output": result["output"]}
-            )
-            
-            state["sql_result"] = sql_result
-            logger.info("SQL агент завершен успешно")
+            state["logs_result"] = logs_result
+            logger.info(f"Агент логов завершен: success={logs_result.success}, processed {len(self.document_manager.log_entries) if self.document_manager.log_entries else 0} logs")
             return state
             
         except Exception as e:
-            logger.error(f"Ошибка SQL агента: {e}")
-            state["sql_result"] = AgentResult(
-                agent_type="sql",
+            logger.error(f"Ошибка агента логов: {e}")
+            state["logs_result"] = AgentResult(
+                agent_type="logs",
                 success=False,
-                content=f"Ошибка выполнения запроса к базе данных: {str(e)}",
+                content=f"Ошибка анализа логов: {str(e)}",
                 sources=[],
                 metadata={},
                 error=str(e)
@@ -317,18 +306,18 @@ class MultiAgentManager:
         try:
             query = state["original_query"]
             rag_result = state.get("rag_result")
-            sql_result = state.get("sql_result")
+            logs_result = state.get("logs_result")
             
             # Подготовка результатов для интеграции
             rag_content = rag_result.content if rag_result and rag_result.success else "Информация не найдена в документах"
-            sql_content = sql_result.content if sql_result and sql_result.success else "Информация не найдена в базе данных"
+            logs_content = logs_result.content if logs_result and logs_result.success else "Информация не найдена в логах"
             
             # Интеграция результатов
             response = self.llm.invoke(
                 self.integration_prompt.format_messages(
                     query=query,
                     rag_result=rag_content,
-                    sql_result=sql_content
+                    logs_result=logs_content
                 )
             )
             
@@ -336,8 +325,8 @@ class MultiAgentManager:
             all_sources = []
             if rag_result and rag_result.success:
                 all_sources.extend(rag_result.sources)
-            if sql_result and sql_result.success:
-                all_sources.extend(sql_result.sources)
+            if logs_result and logs_result.success:
+                all_sources.extend(logs_result.sources)
             
             state["final_answer"] = response.content
             state["sources"] = list(set(all_sources))  # Убираем дубликаты
@@ -350,10 +339,13 @@ class MultiAgentManager:
             # Возвращаем лучший доступный результат
             if state.get("rag_result") and state["rag_result"].success:
                 state["final_answer"] = state["rag_result"].content
-            elif state.get("sql_result") and state["sql_result"].success:
-                state["final_answer"] = state["sql_result"].content
+                state["sources"] = state["rag_result"].sources
+            elif state.get("logs_result") and state["logs_result"].success:
+                state["final_answer"] = state["logs_result"].content
+                state["sources"] = state["logs_result"].sources
             else:
                 state["final_answer"] = "Не удалось получить информацию из доступных источников"
+                state["sources"] = []
             
             return state
 
@@ -363,7 +355,7 @@ class MultiAgentManager:
         
         routing_map = {
             "rag_only": "rag_only",
-            "sql_only": "sql_only", 
+            "logs_only": "logs_only", 
             "hybrid": "hybrid",
             "unclear": "unclear"
         }
@@ -375,7 +367,7 @@ class MultiAgentManager:
         query_type = state["query_type"]
         
         if query_type == "hybrid":
-            return "to_sql"  # Для гибридных запросов идем к SQL агенту
+            return "to_logs"  # Для гибридных запросов идем к агенту логов
         elif query_type == "rag_only":
             return "end"  # Для RAG-only завершаем
         else:
@@ -390,7 +382,7 @@ class MultiAgentManager:
                 "original_query": query,
                 "query_type": "",
                 "rag_result": None,
-                "sql_result": None,
+                "logs_result": None,
                 "final_answer": None,
                 "sources": [],
                 "metadata": {}
@@ -406,7 +398,7 @@ class MultiAgentManager:
                 "sources": final_state.get("sources", []),
                 "query_type": final_state.get("query_type", "unknown"),
                 "rag_result": final_state.get("rag_result"),
-                "sql_result": final_state.get("sql_result"),
+                "logs_result": final_state.get("logs_result"),
                 "metadata": final_state.get("metadata", {})
             }
             
@@ -417,7 +409,7 @@ class MultiAgentManager:
                 "sources": [],
                 "query_type": "error",
                 "rag_result": None,
-                "sql_result": None,
+                "logs_result": None,
                 "metadata": {"error": str(e)}
             }
 
@@ -430,7 +422,7 @@ class MultiAgentManager:
                 "original_query": query,
                 "query_type": "",
                 "rag_result": None,
-                "sql_result": None,
+                "logs_result": None,
                 "final_answer": None,
                 "sources": [],
                 "metadata": {}
@@ -446,7 +438,7 @@ class MultiAgentManager:
                 "sources": final_state.get("sources", []),
                 "query_type": final_state.get("query_type", "unknown"),
                 "rag_result": final_state.get("rag_result"),
-                "sql_result": final_state.get("sql_result"),
+                "logs_result": final_state.get("logs_result"),
                 "metadata": final_state.get("metadata", {})
             }
             
@@ -457,6 +449,6 @@ class MultiAgentManager:
                 "sources": [],
                 "query_type": "error", 
                 "rag_result": None,
-                "sql_result": None,
+                "logs_result": None,
                 "metadata": {"error": str(e)}
             }
