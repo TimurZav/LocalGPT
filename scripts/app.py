@@ -16,7 +16,7 @@ from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
 from tinydb.queries import QueryLike
-from openrouter import ChatOpenRouter
+from claude_code_llm import ClaudeCodeLLM
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
 from langchain_community.vectorstores import Chroma
@@ -71,7 +71,7 @@ class SystemPromptManager:
         :param mode: Mode.
         :return: Prompt.
         """
-        return QUERY_SYSTEM_PROMPT if mode == "RAG" else LLM_SYSTEM_PROMPT
+        return QUERY_SYSTEM_PROMPT
 
 
 class AnalyticsManager:
@@ -642,7 +642,7 @@ class DocumentManager:
         :return: A tuple with formatted RAG documents and similarity scores (for UI display only).
         """
         if (
-            collection_radio not in [MODES[0], MODES[1]]
+            collection_radio not in MODES
             or not history
             or history[-1]["role"] != "user"
         ):
@@ -944,7 +944,7 @@ class MessageManager:
         last_user_message: str = history[-1].get("content")
         processed_docs = self.process_retrieved_docs(retrieved_docs)
 
-        if processed_docs and mode in [MODES[0], MODES[1]]:
+        if processed_docs and mode in MODES:
             last_user_message = (
                 f"Контекст: {processed_docs}\n\nИспользуя только контекст, ответь на вопрос: "
                 f"{last_user_message}"
@@ -993,7 +993,7 @@ class ModelManager:
         self.document_manager = document_manager
 
         # Initializing the base model
-        self.llm = ChatOpenRouter(model_name=MODELS[0])
+        self.llm = ClaudeCodeLLM(model_name=CLAUDE_CODE_MODELS[0])
 
         # Initialize Multi-Agent Manager
         self.multi_agent_manager = None
@@ -1001,7 +1001,7 @@ class ModelManager:
             from multi_agent_manager import MultiAgentManager
             self.multi_agent_manager = MultiAgentManager(
                 document_manager=self.document_manager,
-                model_name=MODELS[0]
+                model_name=CLAUDE_CODE_MODELS[0]
             )
 
     def update_model(self, model_name: str):
@@ -1012,7 +1012,10 @@ class ModelManager:
         :return: None.
         """
         if model_name != self.llm.model_name:
-            self.llm = ChatOpenRouter(model_name=model_name)
+            self.llm = ClaudeCodeLLM(model_name=model_name)
+            # Обновляем модель в многоагентной системе
+            if self.multi_agent_manager:
+                self.multi_agent_manager.update_model(model_name)
 
     async def generate_response_stream(
         self,
@@ -1087,10 +1090,6 @@ class ModelManager:
                 query_type_info = ""
                 if result["query_type"] == "hybrid":
                     query_type_info = "\n\n*Использованы данные из документов и логов*"
-                elif result["query_type"] == "rag_only":
-                    query_type_info = "\n\n*Использованы данные из документов*"
-                elif result["query_type"] == "logs_only":
-                    query_type_info = "\n\n*Использованы данные из логов*"
                 
                 response_text += query_type_info
                 
@@ -1124,8 +1123,23 @@ class ModelManager:
         
         # Add logs if enabled
         if use_log_search and self.document_manager.log_entries:
-            all_logs = "\n".join(self.document_manager.log_entries)
-            context_parts.append(f"Все логи системы:\n{all_logs}")
+            # Ограничение логов для избежания ошибки "Argument list too long"
+            max_logs_chars = 50000  # Максимальный размер логов в символах
+            max_log_entries = 1000   # Максимальное количество записей логов
+            
+            # Берем последние записи и ограничиваем по размеру
+            log_entries = self.document_manager.log_entries[-max_log_entries:]
+            all_logs = "\n".join(log_entries)
+            
+            # Если логи все еще слишком большие, обрезаем по символам
+            if len(all_logs) > max_logs_chars:
+                all_logs = all_logs[-max_logs_chars:]
+                # Убеждаемся, что не обрезали строку посередине
+                first_newline = all_logs.find('\n')
+                if first_newline > 0:
+                    all_logs = all_logs[first_newline + 1:]
+            
+            context_parts.append(f"Последние логи системы ({len(log_entries)} записей):\n{all_logs}")
             files.append("logs")
         
         # Combine context
@@ -1414,11 +1428,11 @@ class UIManager:
 
                             with gr.Column():
                                 model = gr.Dropdown(
-                                    choices=MODELS,
-                                    value=MODELS[0],
+                                    choices=CLAUDE_CODE_MODELS,
+                                    value=CLAUDE_CODE_MODELS[0],
                                     interactive=True,
                                     show_label=True,
-                                    label="Выбор моделей"
+                                    label="Выбор моделей Claude"
                                 )
 
                         with gr.Row():

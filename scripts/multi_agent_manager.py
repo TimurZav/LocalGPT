@@ -10,8 +10,9 @@ from enum import Enum
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from openrouter import ChatOpenRouter
-from __init__ import MODELS
+from claude_code_llm import ClaudeCodeLLM
+# from openrouter import ChatOpenRouter
+# from __init__ import MODELS
 
 # Для LangGraph
 from langgraph.graph import StateGraph, END
@@ -22,10 +23,7 @@ logger = logging.getLogger(__name__)
 
 class QueryType(Enum):
     """Типы запросов"""
-    RAG_ONLY = "rag_only"
-    LOGS_ONLY = "logs_only" 
     HYBRID = "hybrid"
-    UNCLEAR = "unclear"
 
 @dataclass
 class AgentResult:
@@ -51,28 +49,15 @@ class GraphState(TypedDict):
 class MultiAgentManager:
     """Менеджер многоагентной системы"""
     
-    def __init__(self, document_manager, model_name: str = MODELS[0]):
+    def __init__(self, document_manager, model_name: str = "claude-3-5-sonnet-20241022"):
         self.document_manager = document_manager
         self.model_name = model_name
-        self.llm = ChatOpenRouter(model_name=model_name)
+        self.llm = ClaudeCodeLLM(model_name=model_name)
         
         # Создание графа агентов
         self.graph = self._create_agent_graph()
         
-        # Промпты
-        self.query_classifier_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Ты классификатор запросов. Определи тип запроса:
- 
-            HYBRID - если вопрос требует данных И из документов, И из логов
-            UNCLEAR - если неясно, какие источники нужны
-
-            Примеры:
-            - "Какие политики безопасности нарушались и какие инциденты происходили?" → HYBRID
-            - "Привет" → UNCLEAR
-
-            Отвечай только одним словом: HYBRID или UNCLEAR"""),
-            ("human", "{query}")
-        ])
+        # Промпты (классификатор больше не нужен, всегда используем HYBRID)
         
         self.rag_agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """Ты RAG агент. Создай КРАТКУЮ ВЫЖИМКУ из документов, которая дополнит анализ логов.
@@ -146,39 +131,11 @@ class MultiAgentManager:
         workflow.add_node("logs_agent", self._run_logs_agent)
         workflow.add_node("integrator", self._integrate_results)
         
-        # Определение маршрутов
+        # Определение маршрутов - простая цепочка
         workflow.set_entry_point("classifier")
-        
-        workflow.add_conditional_edges(
-            "classifier",
-            self._route_query,
-            {
-                "rag_only": "rag_agent",
-                "logs_only": "logs_agent",
-                "hybrid": "logs_agent",  # Для гибридных сначала ЛОГИ
-                "unclear": END
-            }
-        )
-        
-        workflow.add_conditional_edges(
-            "rag_agent",
-            self._after_rag,
-            {
-                "to_logs": "logs_agent",
-                "to_integrator": "integrator",
-                "end": END
-            }
-        )
-        
-        workflow.add_conditional_edges(
-            "logs_agent",
-            self._after_logs,
-            {
-                "to_rag": "rag_agent",
-                "to_integrator": "integrator",
-                "end": END
-            }
-        )
+        workflow.add_edge("classifier", "logs_agent")
+        workflow.add_edge("logs_agent", "rag_agent")
+        workflow.add_edge("rag_agent", "integrator")
         workflow.add_edge("integrator", END)
         
         return workflow.compile(checkpointer=MemorySaver())
@@ -187,29 +144,15 @@ class MultiAgentManager:
         """Обновление модели для всех агентов"""
         if model_name != self.model_name:
             self.model_name = model_name
-            self.llm = ChatOpenRouter(model_name=model_name)
+            self.llm = ClaudeCodeLLM(model_name=model_name)
             logger.info(f"Multi-agent system updated to use model: {model_name}")
 
     def _classify_query(self, state: GraphState) -> GraphState:
-        """Классификация запроса"""
-        try:
-            query = state["original_query"]
-            response = self.llm.invoke(self.query_classifier_prompt.format_messages(query=query))
-            query_type = response.content.strip().upper()
-            
-            if query_type not in [qt.value.upper() for qt in QueryType]:
-                query_type = QueryType.UNCLEAR.value.upper()
-            
-            state["query_type"] = query_type.lower()
-            state["metadata"] = {"classification_confidence": "high"}
-            
-            logger.info(f"Классификация запроса: {query_type}")
-            return state
-            
-        except Exception as e:
-            logger.error(f"Ошибка классификации: {e}")
-            state["query_type"] = QueryType.UNCLEAR.value
-            return state
+        """Классификация запроса - всегда возвращает HYBRID"""
+        state["query_type"] = QueryType.HYBRID.value
+        state["metadata"] = {"classification_confidence": "high"}
+        logger.info("Запрос классифицирован как HYBRID")
+        return state
 
     def _run_rag_agent(self, state: GraphState) -> GraphState:
         """Выполнение RAG агента для поиска по документам"""
@@ -280,8 +223,23 @@ class MultiAgentManager:
                     metadata={}
                 )
             else:
-                # Генерация ответа на основе всех логов
-                all_logs = "\n".join(self.document_manager.log_entries)
+                # Ограничение логов для избежания ошибки "Argument list too long"
+                max_logs_chars = 50000  # Максимальный размер логов в символах
+                max_log_entries = 1000   # Максимальное количество записей логов
+                
+                # Берем последние записи и ограничиваем по размеру
+                log_entries = self.document_manager.log_entries[-max_log_entries:]
+                all_logs = "\n".join(log_entries)
+                
+                # Если логи все еще слишком большие, обрезаем по символам
+                if len(all_logs) > max_logs_chars:
+                    all_logs = all_logs[-max_logs_chars:]
+                    # Убеждаемся, что не обрезали строку посередине
+                    first_newline = all_logs.find('\n')
+                    if first_newline > 0:
+                        all_logs = all_logs[first_newline + 1:]
+                
+                logger.info(f"Обрабатываем {len(log_entries)} записей логов, размер: {len(all_logs)} символов")
                 
                 response = self.llm.invoke(
                     self.logs_agent_prompt.format_messages(
@@ -364,40 +322,7 @@ class MultiAgentManager:
             
             return state
 
-    def _route_query(self, state: GraphState) -> str:
-        """Маршрутизация после классификации"""
-        query_type = state["query_type"]
-        
-        routing_map = {
-            "rag_only": "rag_only",
-            "logs_only": "logs_only", 
-            "hybrid": "hybrid",
-            "unclear": "unclear"
-        }
-        
-        return routing_map.get(query_type, "unclear")
 
-    def _after_rag(self, state: GraphState) -> str:
-        """Определение следующего шага после RAG агента"""
-        query_type = state["query_type"]
-        
-        if query_type == "hybrid":
-            return "to_logs"  # Для гибридных запросов идем к агенту логов
-        elif query_type == "rag_only":
-            return "end"  # Для RAG-only завершаем
-        else:
-            return "to_integrator"  # Остальное в интегратор
-    
-    def _after_logs(self, state: GraphState) -> str:
-        """Определение следующего шага после агента логов"""
-        query_type = state["query_type"]
-        
-        if query_type == "hybrid":
-            return "to_rag"  # Для гибридных запросов идем к RAG агенту с результатом логов
-        elif query_type == "logs_only":
-            return "end"  # Для logs-only завершаем
-        else:
-            return "to_integrator"  # Остальное в интегратор
 
     async def process_query(self, query: str, thread_id: str = "default") -> Dict[str, Any]:
         """Основной метод обработки запроса"""

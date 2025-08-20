@@ -14,8 +14,6 @@ from langchain_community.document_loaders import (
     UnstructuredWordDocumentLoader,
 )
 
-
-os.environ["OPENROUTER_API_KEY"] = ""
 FAVICON_PATH: str = 'https://i.ibb.co/3CVGPf7/1681038242chatgpt-logo-png.png'
 QUERY_SYSTEM_PROMPT: str = "Вы, помощник по документам - полезный, уважительный и честный ассистент. " \
                      "Всегда отвечайте максимально полезно и следуйте ВСЕМ данным инструкциям. " \
@@ -26,7 +24,7 @@ LLM_SYSTEM_PROMPT: str = "Вы, помощник по документам — �
                          "Данные от функций надежны, но могут быть нерелевантны. Анализируйте их в контексте вопроса " \
                          "и дополняйте своим ответом, чтобы он был полным и полезным."
 
-MODES: list = ["RAG", "Поиск", "Свободное общение"]
+MODES: list = ["HYBRID"]
 CONTEXT_SIZE = 4000
 
 LOADER_MAPPING: dict = {
@@ -47,7 +45,10 @@ LOADER_MAPPING: dict = {
 IP_MODEL: str = "http://localhost:11434"
 LOGIN_SERVER: str = "Test"
 PASSWORD_SERVER: str = "Test"
-MODELS: list = ["openai/gpt-4o-mini", "deepseek/deepseek-r1:free", "meta-llama/llama-3.3-70b-instruct:free"]
+# Claude Code модели
+CLAUDE_CODE_MODELS = [
+    "claude-4-sonnet"
+]
 MODEL_AUDIO = "openai/whisper-large-v3-turbo"
 EMBEDDER_NAME: str = "intfloat/multilingual-e5-large"
 MAX_NEW_TOKENS: int = 1500
