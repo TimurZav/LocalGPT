@@ -62,30 +62,32 @@ class MultiAgentManager:
         # Промпты
         self.query_classifier_prompt = ChatPromptTemplate.from_messages([
             ("system", """Ты классификатор запросов. Определи тип запроса:
-
-            RAG_ONLY - если вопрос касается только информации из документов (политики, планы, процедуры, техническая документация)
-            LOGS_ONLY - если вопрос касается только логов и событий системы (ошибки, предупреждения, события, проблемы, сбои)  
+ 
             HYBRID - если вопрос требует данных И из документов, И из логов
             UNCLEAR - если неясно, какие источники нужны
 
             Примеры:
-            - "Какие требования к паролям?" → RAG_ONLY
-            - "Какие ошибки были вчера?" → LOGS_ONLY
-            - "Что произошло с сервером?" → LOGS_ONLY
             - "Какие политики безопасности нарушались и какие инциденты происходили?" → HYBRID
             - "Привет" → UNCLEAR
 
-            Отвечай только одним словом: RAG_ONLY, LOGS_ONLY, HYBRID или UNCLEAR"""),
+            Отвечай только одним словом: HYBRID или UNCLEAR"""),
             ("human", "{query}")
         ])
         
         self.rag_agent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Ты RAG агент. Используй ТОЛЬКО предоставленный контекст из документов для ответа на вопрос.
+            ("system", """Ты RAG агент. Создай КРАТКУЮ ВЫЖИМКУ из документов, которая дополнит анализ логов.
+
+            Инструкции:
+            1. Найди в чанках информацию, которая объясняет события из логов
+            2. Ищи теоретическую информацию о механиках, правилах, ограничениях
+            3. Включи информацию о наградах, героях, механиках игры
+            4. ОСОБОЕ ВНИМАНИЕ: ищи информацию о сохранениях, синхронизации данных, потере прогресса
+            5. Укажи источники для каждого факта
+            6. Если есть результат анализа логов - найди документацию, которая это объясняет
+            7. Формат: краткие пункты с объяснениями и контекстом
             
-            Если контекст не содержит информации для ответа, скажи "Информация не найдена в документах".
-            Всегда указывай источники информации.
-            Будь точным и конкретным."""),
-            ("human", "Контекст из документов:\n{context}\n\nВопрос: {query}")
+            Цель: дополнить практические данные из логов теоретическими знаниями."""),
+            ("human", "Контекст из документов:\n{context}\n\nРезультат анализа логов:\n{logs_result}\n\nВопрос: {query}")
         ])
         
         self.logs_agent_prompt = ChatPromptTemplate.from_messages([
@@ -153,7 +155,7 @@ class MultiAgentManager:
             {
                 "rag_only": "rag_agent",
                 "logs_only": "logs_agent",
-                "hybrid": "rag_agent",  # Для гибридных сначала RAG
+                "hybrid": "logs_agent",  # Для гибридных сначала ЛОГИ
                 "unclear": END
             }
         )
@@ -168,7 +170,15 @@ class MultiAgentManager:
             }
         )
         
-        workflow.add_edge("logs_agent", "integrator")
+        workflow.add_conditional_edges(
+            "logs_agent",
+            self._after_logs,
+            {
+                "to_rag": "rag_agent",
+                "to_integrator": "integrator",
+                "end": END
+            }
+        )
         workflow.add_edge("integrator", END)
         
         return workflow.compile(checkpointer=MemorySaver())
@@ -207,7 +217,7 @@ class MultiAgentManager:
             query = state["original_query"]
             
             # Получение контекста из документов через RAG поиск (напрямую)
-            rag_context, sources = self.document_manager.get_rag_context(query, k_documents=6)
+            rag_context, sources = self.document_manager.get_rag_context(query, k_documents=8)
             
             if not rag_context:
                 rag_result = AgentResult(
@@ -218,10 +228,15 @@ class MultiAgentManager:
                     metadata={"context_length": 0}
                 )
             else:
-                # Генерация ответа на основе контекста документов
+                # Получение результата логов, если есть
+                logs_result = state.get("logs_result")
+                logs_content = logs_result.content if logs_result and logs_result.success else "Анализ логов не выполнен"
+                
+                # Генерация ответа на основе контекста документов + результат логов
                 response = self.llm.invoke(
                     self.rag_agent_prompt.format_messages(
                         context=rag_context,
+                        logs_result=logs_content,
                         query=query
                     )
                 )
@@ -370,6 +385,17 @@ class MultiAgentManager:
             return "to_logs"  # Для гибридных запросов идем к агенту логов
         elif query_type == "rag_only":
             return "end"  # Для RAG-only завершаем
+        else:
+            return "to_integrator"  # Остальное в интегратор
+    
+    def _after_logs(self, state: GraphState) -> str:
+        """Определение следующего шага после агента логов"""
+        query_type = state["query_type"]
+        
+        if query_type == "hybrid":
+            return "to_rag"  # Для гибридных запросов идем к RAG агенту с результатом логов
+        elif query_type == "logs_only":
+            return "end"  # Для logs-only завершаем
         else:
             return "to_integrator"  # Остальное в интегратор
 

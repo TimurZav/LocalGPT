@@ -746,7 +746,8 @@ class DocumentManager:
 
 class AudioManager:
     def __init__(self):
-        self.pipeline = pipeline("automatic-speech-recognition", model=MODEL_AUDIO)
+        pass
+        # self.pipeline = pipeline("automatic-speech-recognition", model=MODEL_AUDIO)
 
     @staticmethod
     def add_to_stream(audio: list, in_stream: list) -> tuple:
@@ -1115,7 +1116,7 @@ class ModelManager:
         # Get RAG context
         rag_context, rag_sources = self.document_manager.get_rag_context(
             last_user_message, 
-            k_documents=6
+            k_documents=8
         )
         if rag_context:
             context_parts.append(f"Контекст из документов:\n{rag_context}")
@@ -1329,8 +1330,6 @@ class UIManager:
                   interface to the name of the selected model. The second update sets the interactive status
                   of the chat interface to True if the selected model is not the "llm" model, or False otherwise.
         """
-        if selected_model in MODELS[1:]:
-            return gr.update(label=f"LLM: {selected_model}"), gr.update(value=False, interactive=True)
         return gr.update(label=f"LLM: {selected_model}"), gr.update(interactive=True)
 
     def launch_ui(self):
@@ -1507,7 +1506,7 @@ class UIManager:
                         k_documents = gr.Slider(
                             minimum=1,
                             maximum=12,
-                            value=6,
+                            value=8,
                             step=1,
                             interactive=True,
                             label="Кол-во фрагментов для контекста"
