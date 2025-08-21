@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import gradio as gr
 import soundfile as sf
+import glob
 from re import Pattern
 from __init__ import *
 from gradio_modal import Modal
@@ -395,6 +396,8 @@ class DocumentManager:
         self.cache: dict = {}
         self.log_file_path: str = ""  # Path to the log file
         self.log_entries: List[str] = []  # Cached log entries
+        self.csv_logs_data: pd.DataFrame = pd.DataFrame()  # CSV logs data
+        self.data_path: str = "/home/timur/PycharmWork/LocalGPT/data2"  # Path to data folder
 
     def load_log_file(self, file_path: str) -> None:
         """
@@ -742,6 +745,148 @@ class DocumentManager:
         except Exception as e:
             logger.error(f"Error loading log file: {e}")
             return f"❌ Ошибка загрузки файла: {str(e)}"
+    
+    def load_csv_logs_from_data(self, request_time: str, pid: str) -> str:
+        """
+        Load and filter CSV logs from data folder based on time range and PID.
+        
+        :param request_time: User request time in ISO format or empty string
+        :param pid: User PID filter or empty string
+        :return: Status message
+        """
+        try:
+            if not os.path.exists(self.data_path):
+                return f"❌ Папка {self.data_path} не найдена"
+            
+            # Find all CSV files in data folder
+            csv_files = glob.glob(os.path.join(self.data_path, "*.csv"))
+            if not csv_files:
+                return "❌ CSV файлы не найдены в папке data"
+            
+            # Load and combine all CSV files
+            all_dfs = []
+            for csv_file in csv_files:
+                try:
+                    df = pd.read_csv(csv_file)
+                    if 'pid' in df.columns and 'Time' in df.columns:
+                        df['source_file'] = os.path.basename(csv_file)
+                        all_dfs.append(df)
+                except Exception as e:
+                    logger.warning(f"Не удалось загрузить {csv_file}: {e}")
+                    continue
+            
+            if not all_dfs:
+                return "❌ Не найдено CSV файлов с корректной структурой (pid, Time)"
+            
+            # Combine all data
+            combined_df = pd.concat(all_dfs, ignore_index=True, sort=False)
+            logger.info(f"Загружено {len(combined_df)} записей из {len(all_dfs)} CSV файлов")
+            
+            # Convert Time column to datetime
+            combined_df['Time'] = pd.to_datetime(combined_df['Time'], errors='coerce')
+            
+            # Filter by PID if specified
+            if pid and pid.strip():
+                pid = pid.strip()
+                combined_df = combined_df[combined_df['pid'] == pid]
+                if combined_df.empty:
+                    return f"❌ Не найдено записей для PID: {pid}"
+            
+            # Filter by time range if request_time is specified
+            if request_time:
+                try:
+                    # Parse request time (Unix timestamp from Gradio)
+                    request_dt = pd.to_datetime(request_time, unit='s', utc=True).tz_convert('Europe/Moscow')
+                    # Calculate 2 days back from request time
+                    two_days_back = request_dt - timedelta(days=2)
+                    
+                    # Remove timezone info for comparison
+                    request_dt = request_dt.tz_localize(None)
+                    two_days_back = two_days_back.tz_localize(None)
+                    
+                    # Filter logs in time range (2 days back to request time)
+                    combined_df = combined_df[
+                        (combined_df['Time'] >= two_days_back) & 
+                        (combined_df['Time'] <= request_dt)
+                    ]
+                    
+                    if combined_df.empty:
+                        return f"❌ Не найдено записей в диапазоне от {two_days_back} до {request_dt}"
+                        
+                except Exception as e:
+                    return f"❌ Ошибка парсинга времени запроса: {e}"
+            
+            # Sort by time
+            combined_df = combined_df.sort_values('Time')
+            
+            # Store the filtered data
+            self.csv_logs_data = combined_df
+            
+            # Convert to log entries format for compatibility with existing system
+            log_entries = []
+            for _, row in combined_df.iterrows():
+                # Create a log entry string with key information
+                log_parts = []
+                log_parts.append(f"PID: {row['pid']}")
+                log_parts.append(f"Event: {row.get('EventName', 'N/A')}")
+                log_parts.append(f"Time: {row['Time']}")
+                log_parts.append(f"Source: {row['source_file']}")
+                
+                # Add other relevant columns
+                for col in row.index:
+                    if col not in ['pid', 'EventName', 'Time', 'source_file'] and pd.notna(row[col]):
+                        log_parts.append(f"{col}: {row[col]}")
+                
+                log_entries.append(" | ".join(log_parts))
+            
+            self.log_entries = log_entries
+            
+            # Prepare summary
+            summary_parts = [
+                f"✅ Загружено {len(combined_df)} записей CSV логов",
+                f"📁 Файлов: {len(all_dfs)}",
+            ]
+            
+            if pid:
+                summary_parts.append(f"👤 PID: {pid}")
+            
+            if request_dt:
+                summary_parts.append(f"⏰ Период: 2 дня назад от {request_dt}")
+                
+            unique_pids = combined_df['pid'].nunique() if 'pid' in combined_df.columns else 0
+            summary_parts.append(f"👥 Уникальных PID: {unique_pids}")
+            
+            return "\n".join(summary_parts)
+            
+        except Exception as e:
+            logger.error(f"Error loading CSV logs: {e}")
+            return f"❌ Ошибка загрузки CSV логов: {str(e)}"
+    
+    def get_csv_logs_summary(self) -> dict:
+        """
+        Get summary information about loaded CSV logs.
+        
+        :return: Dictionary with summary information
+        """
+        if self.csv_logs_data.empty:
+            return {"status": "no_data", "message": "CSV логи не загружены"}
+        
+        try:
+            df = self.csv_logs_data
+            summary = {
+                "status": "loaded",
+                "total_records": len(df),
+                "unique_pids": df['pid'].nunique() if 'pid' in df.columns else 0,
+                "unique_events": df['EventName'].nunique() if 'EventName' in df.columns else 0,
+                "time_range": {
+                    "start": df['Time'].min().strftime("%Y-%m-%d %H:%M:%S") if 'Time' in df.columns and not df['Time'].isna().all() else "N/A",
+                    "end": df['Time'].max().strftime("%Y-%m-%d %H:%M:%S") if 'Time' in df.columns and not df['Time'].isna().all() else "N/A"
+                },
+                "source_files": df['source_file'].unique().tolist() if 'source_file' in df.columns else []
+            }
+            return summary
+        except Exception as e:
+            return {"status": "error", "message": f"Ошибка анализа данных: {str(e)}"}
 
 
 class AudioManager:
@@ -1486,6 +1631,21 @@ class UIManager:
                                 file_types=[".txt"]
                             )
                             log_status = gr.Markdown("Лог файл не загружен")
+                        
+                        with gr.Tab("CSV Логи из data2"):
+                            with gr.Row():
+                                user_request_time = gr.DateTime(
+                                    label="Время запроса пользователя",
+                                    value=None,
+                                    info="Будут показаны логи от этого времени до 2 дней назад"
+                                )
+                                user_pid = gr.Textbox(
+                                    label="PID пользователя",
+                                    placeholder="Например: p1, p2, p3...",
+                                    value=""
+                                )
+                            load_csv_logs_btn = gr.Button("📊 Загрузить CSV логи", variant="primary")
+                            csv_log_status = gr.Markdown("CSV логи не загружены")
 
                     with gr.Column(scale=7):
                         files_selected = gr.Dropdown(
@@ -1666,6 +1826,14 @@ class UIManager:
                 fn=self.document_manager.load_log_file_ui,
                 inputs=[log_file_upload],
                 outputs=[log_status],
+                queue=True
+            )
+
+            # Load CSV logs from data2
+            load_csv_logs_btn.click(
+                fn=self.document_manager.load_csv_logs_from_data,
+                inputs=[user_request_time, user_pid],
+                outputs=[csv_log_status],
                 queue=True
             )
 
