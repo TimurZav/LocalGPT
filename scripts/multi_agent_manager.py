@@ -39,6 +39,7 @@ class GraphState(TypedDict):
     """Состояние графа агентов"""
     messages: Annotated[List, add_messages]
     original_query: str
+    dialog_history: Optional[List[dict]]  # История диалога для контекста
     query_type: str
     rag_result: Optional[AgentResult]
     logs_result: Optional[AgentResult]
@@ -70,13 +71,14 @@ class MultiAgentManager:
             5. Укажи источники для каждого факта
             6. Если есть результат анализа логов - найди документацию, которая это объясняет
             7. Формат: краткие пункты с объяснениями и контекстом
+            8. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов из истории диалога
             
             Цель: дополнить практические данные из логов теоретическими знаниями."""),
-            ("human", "Контекст из документов:\n{context}\n\nРезультат анализа логов:\n{logs_result}\n\nВопрос: {query}")
+            ("human", "История диалога:\n{dialog_history}\n\nКонтекст из документов:\n{context}\n\nРезультат анализа логов:\n{logs_result}\n\nТекущий вопрос: {query}")
         ])
         
         self.logs_agent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Ты агент анализа логов. Тебе предоставлены ВСЕ логи системы для анализа.
+            ("system", """Ты агент анализа логов. Тебе предоставлены логи системы для анализа.
             
             Инструкции:
             1. Анализируй все предоставленные логи полностью
@@ -85,15 +87,17 @@ class MultiAgentManager:
             4. Указывай временные метки для важных событий
             5. Если в логах нет информации для ответа, так и скажи
             6. Предоставляй детальный анализ со статистикой, если возможно
+            7. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов из истории диалога
             
             Будь максимально полезным и аналитическим."""),
-            ("human", "Все логи системы:\n{logs}\n\nВопрос для анализа: {query}")
+            ("human", "История диалога:\n{dialog_history}\n\nЛоги системы:\n{logs}\n\nТекущий вопрос для анализа: {query}")
         ])
         
         self.integration_prompt = ChatPromptTemplate.from_messages([
             ("system", """Ты интеграционный агент. Твоя задача - создать полный и связный ответ, объединив:
             1. Результат RAG поиска по документам (релевантные чанки из docx)
             2. Результат анализа всех логов системы
+            3. Контекст предыдущего диалога для непрерывности разговора
 
             Правила интеграции:
             1. Сначала используй информацию из документов для теоретической части ответа
@@ -102,22 +106,27 @@ class MultiAgentManager:
             4. Если результаты противоречат друг другу, укажи это и объясни различия
             5. Если один источник не содержит информации, полноценно используй другой
             6. Всегда указывай, откуда взята информация
+            7. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов для логичности диалога
+            8. Ссылайся на предыдущие ответы, если текущий вопрос связан с ними
 
             Структура ответа:
-            [Основной интегрированный ответ с использованием обоих источников]
+            [Основной интегрированный ответ с использованием обоих источников и контекста диалога]
             
             ## Источники данных
             - Документы: [список файлов, если есть]
             - Системные логи: [краткая характеристика логов]"""),
-            ("human", """Вопрос пользователя: {query}
+            ("human", """История диалога:
+            {dialog_history}
+
+            Текущий вопрос пользователя: {query}
 
             Информация из документов (RAG):
             {rag_result}
 
-            Информация из всех логов системы:  
+            Информация из логов системы:  
             {logs_result}
 
-            Создай интегрированный ответ, объединив информацию из документов и логов.""")
+            Создай интегрированный ответ, объединив всю информацию и учитывая контекст диалога.""")
         ])
 
 
@@ -147,6 +156,42 @@ class MultiAgentManager:
             self.llm = ClaudeCodeLLM(model_name=model_name)
             logger.info(f"Multi-agent system updated to use model: {model_name}")
 
+    def _format_dialog_history(self, dialog_history: Optional[List[dict]]) -> str:
+        """Форматирование истории диалога для промптов"""
+        if not dialog_history or len(dialog_history) < 2:
+            return "Нет предыдущих сообщений в диалоге."
+        
+        # Берем последние несколько пар вопрос-ответ (максимум 3 пары)
+        max_pairs = 3
+        formatted_history = []
+        
+        # Исключаем последнее сообщение пользователя (это текущий вопрос)
+        history_to_process = dialog_history[:-1]
+        
+        # Группируем по парам user -> assistant
+        pairs = []
+        current_pair = {}
+        
+        for message in history_to_process:
+            if message["role"] == "user":
+                if current_pair.get("assistant"):
+                    pairs.append(current_pair)
+                current_pair = {"user": message["content"]}
+            elif message["role"] == "assistant" and current_pair.get("user"):
+                current_pair["assistant"] = message["content"]
+        
+        if current_pair.get("user") and current_pair.get("assistant"):
+            pairs.append(current_pair)
+        
+        # Берем последние пары и форматируем
+        recent_pairs = pairs[-max_pairs:] if len(pairs) > max_pairs else pairs
+        
+        for i, pair in enumerate(recent_pairs, 1):
+            formatted_history.append(f"Вопрос {i}: {pair['user']}")
+            formatted_history.append(f"Ответ {i}: {pair['assistant'][:200]}...")  # Обрезаем длинные ответы
+        
+        return "\n\n".join(formatted_history) if formatted_history else "Нет предыдущих сообщений в диалоге."
+
     def _classify_query(self, state: GraphState) -> GraphState:
         """Классификация запроса - всегда возвращает HYBRID"""
         state["query_type"] = QueryType.HYBRID.value
@@ -158,6 +203,7 @@ class MultiAgentManager:
         """Выполнение RAG агента для поиска по документам"""
         try:
             query = state["original_query"]
+            dialog_history = self._format_dialog_history(state.get("dialog_history"))
             
             # Получение контекста из документов через RAG поиск (напрямую)
             rag_context, sources = self.document_manager.get_rag_context(query, k_documents=8)
@@ -178,6 +224,7 @@ class MultiAgentManager:
                 # Генерация ответа на основе контекста документов + результат логов
                 response = self.llm.invoke(
                     self.rag_agent_prompt.format_messages(
+                        dialog_history=dialog_history,
                         context=rag_context,
                         logs_result=logs_content,
                         query=query
@@ -212,6 +259,7 @@ class MultiAgentManager:
         """Выполнение агента логов"""
         try:
             query = state["original_query"]
+            dialog_history = self._format_dialog_history(state.get("dialog_history"))
             
             # Получение всех логов
             if not self.document_manager.log_entries:
@@ -243,6 +291,7 @@ class MultiAgentManager:
                 
                 response = self.llm.invoke(
                     self.logs_agent_prompt.format_messages(
+                        dialog_history=dialog_history,
                         logs=all_logs,
                         query=query
                     )
@@ -278,6 +327,7 @@ class MultiAgentManager:
         """Интеграция результатов"""
         try:
             query = state["original_query"]
+            dialog_history = self._format_dialog_history(state.get("dialog_history"))
             rag_result = state.get("rag_result")
             logs_result = state.get("logs_result")
             
@@ -288,6 +338,7 @@ class MultiAgentManager:
             # Интеграция результатов
             response = self.llm.invoke(
                 self.integration_prompt.format_messages(
+                    dialog_history=dialog_history,
                     query=query,
                     rag_result=rag_content,
                     logs_result=logs_content
@@ -324,13 +375,14 @@ class MultiAgentManager:
 
 
 
-    async def process_query(self, query: str, thread_id: str = "default") -> Dict[str, Any]:
+    async def process_query(self, query: str, dialog_history: Optional[List[dict]] = None, thread_id: str = "default") -> Dict[str, Any]:
         """Основной метод обработки запроса"""
         try:
             # Инициализация состояния
             initial_state = {
                 "messages": [HumanMessage(content=query)],
                 "original_query": query,
+                "dialog_history": dialog_history,
                 "query_type": "",
                 "rag_result": None,
                 "logs_result": None,
@@ -364,13 +416,14 @@ class MultiAgentManager:
                 "metadata": {"error": str(e)}
             }
 
-    def process_query_sync(self, query: str, thread_id: str = "default") -> Dict[str, Any]:
+    def process_query_sync(self, query: str, dialog_history: Optional[List[dict]] = None, thread_id: str = "default") -> Dict[str, Any]:
         """Синхронная версия обработки запроса"""
         try:
             # Инициализация состояния
             initial_state = {
                 "messages": [HumanMessage(content=query)],
                 "original_query": query,
+                "dialog_history": dialog_history,
                 "query_type": "",
                 "rag_result": None,
                 "logs_result": None,

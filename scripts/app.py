@@ -1080,6 +1080,7 @@ class ModelManager:
                 
                 result = self.multi_agent_manager.process_query_sync(
                     query=last_user_message,
+                    dialog_history=history,
                     thread_id=uid
                 )
                 
