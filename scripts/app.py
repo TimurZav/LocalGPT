@@ -8,8 +8,10 @@ import numpy as np
 import pandas as pd
 import gradio as gr
 import soundfile as sf
+from re import Pattern
 from __init__ import *
 from gradio_modal import Modal
+from neo4j import GraphDatabase
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
@@ -394,6 +396,7 @@ class DocumentManager:
         # Initialize Neo4j connections
         self.neo4j_vector: Optional[Neo4jVector] = None
         self.neo4j_graph: Optional[Neo4jGraph] = None
+        self.graph_driver = None
         
         # Other components
         self.segmenter: Segmenter = Segmenter()
@@ -529,6 +532,12 @@ class DocumentManager:
         """
         Initialize Neo4j connections and components for GraphRAG.
         """
+        # Initialize Graph Database driver
+        self.graph_driver = GraphDatabase.driver(
+            self.neo4j_url,
+            auth=(self.neo4j_username, self.neo4j_password)
+        )
+        
         # Initialize Neo4j Graph for structured queries
         self.neo4j_graph = Neo4jGraph(
             url=self.neo4j_url,
@@ -539,6 +548,7 @@ class DocumentManager:
         # Initialize Neo4j Vector Store for embeddings with safer approach
         self.neo4j_vector = Neo4jVector.from_existing_graph(
             embedding=self.embeddings,
+            search_type="hybrid",
             url=self.neo4j_url,
             username=self.neo4j_username,
             password=self.neo4j_password,
