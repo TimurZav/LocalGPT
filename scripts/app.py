@@ -15,12 +15,14 @@ from tinydb import TinyDB, where
 from yake import KeywordExtractor
 from functions.functions import *
 from transformers import pipeline
+from neo4j import GraphDatabase
 from collections import defaultdict
 from tinydb.queries import QueryLike
 from claude_code_llm import ClaudeCodeLLM
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
 from langchain_community.vectorstores import Chroma
+from langchain_neo4j import Neo4jVector, Neo4jGraph
 from langchain_community.utilities import SQLDatabase
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.agent_toolkits import create_sql_agent
@@ -389,7 +391,21 @@ class DocumentManager:
             cache_folder=MODELS_DIR
         )
         self.collection: str = "all-documents"
+        
+        # Neo4j connection parameters
+        self.neo4j_url = "bolt://localhost:7687"
+        self.neo4j_username = "neo4j"
+        self.neo4j_password = "localgpt123"
+        
+        # Initialize Neo4j connections
+        self.neo4j_vector: Optional[Neo4jVector] = None
+        self.neo4j_graph: Optional[Neo4jGraph] = None
+        self.graph_driver = None
+        
+        # Legacy Chroma support (for backward compatibility)
         self.db: Optional[Chroma] = None
+        
+        # Other components
         self.segmenter: Segmenter = Segmenter()
         self.morph_vocab: MorphVocab = MorphVocab()
         self.morph_tagger: NewsMorphTagger = NewsMorphTagger(NewsEmbedding())
@@ -398,6 +414,9 @@ class DocumentManager:
         self.log_entries: List[str] = []  # Cached log entries
         self.csv_logs_data: pd.DataFrame = pd.DataFrame()  # CSV logs data
         self.data_path: str = "/home/timur/PycharmWork/LocalGPT/data2"  # Path to data folder
+        
+        # Initialize Neo4j components
+        self._initialize_neo4j()
 
     def load_log_file(self, file_path: str) -> None:
         """
@@ -417,23 +436,72 @@ class DocumentManager:
             logger.error(f"Error loading log file {file_path}: {e}")
             self.log_entries = []
 
-    def initialize_database(self) -> Chroma:
+    def _initialize_neo4j(self):
         """
-        Loads the database connection using a persistent Chroma client.
-
-        This method initializes a PersistentClient for Chroma, specifying the
-        path to the database directory. It then creates and returns a Chroma
-        instance that can be used to interact with the specified collection
-        using the defined embedding function.
-
-        :return: An instance of Chroma connected to the specified collection.
+        Initialize Neo4j connections and components for GraphRAG.
         """
-        client = chromadb.PersistentClient(path=DB_DIR)
-        return Chroma(
-            client=client,
-            collection_name=self.collection,
-            embedding_function=self.embeddings,
-        )
+        try:
+            # Initialize Graph Database driver
+            self.graph_driver = GraphDatabase.driver(
+                self.neo4j_url,
+                auth=(self.neo4j_username, self.neo4j_password)
+            )
+            
+            # Initialize Neo4j Graph for structured queries
+            self.neo4j_graph = Neo4jGraph(
+                url=self.neo4j_url,
+                username=self.neo4j_username,
+                password=self.neo4j_password
+            )
+            
+            # Initialize Neo4j Vector Store for embeddings with safer approach
+            self.neo4j_vector = Neo4jVector.from_existing_graph(
+                embedding=self.embeddings,
+                url=self.neo4j_url,
+                username=self.neo4j_username,
+                password=self.neo4j_password,
+                index_name="document_embeddings",
+                node_label="Document",
+                text_node_properties=["content", "title"],
+                embedding_node_property="embedding"
+            )
+            
+            if self.neo4j_vector:
+                logger.info("Neo4j GraphRAG initialized successfully")
+            else:
+                logger.warning("Neo4j Vector Store not available, will use graph-only approach")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Neo4j: {e}")
+            # Fallback to Chroma if Neo4j fails
+            self._initialize_chroma_fallback()
+    
+    def _initialize_chroma_fallback(self):
+        """
+        Fallback to Chroma if Neo4j initialization fails.
+        """
+        try:
+            client = chromadb.PersistentClient(path=DB_DIR)
+            self.db = Chroma(
+                client=client,
+                collection_name=self.collection,
+                embedding_function=self.embeddings,
+            )
+            logger.info("Fallback to Chroma database initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize Chroma fallback: {e}")
+    
+    def initialize_database(self):
+        """
+        Initialize the database (Neo4j or Chroma fallback).
+        """
+        if self.neo4j_vector is None:
+            self._initialize_neo4j()
+        
+        if self.neo4j_vector is None and self.db is None:
+            self._initialize_chroma_fallback()
+        
+        return self.neo4j_vector or self.db
 
     @staticmethod
     def load_document_from_file(file_path: str) -> Document:
@@ -479,37 +547,104 @@ class DocumentManager:
         page_content = "\n".join(lines).strip()
         return "" if len(page_content) < 10 else page_content
 
+    def _create_graph_relationships(self, documents: List[Document]):
+        """
+        Create relationships between documents and entities in Neo4j graph.
+        """
+        if not self.graph_driver:
+            return
+        
+        with self.graph_driver.session() as session:
+            for i, doc in enumerate(documents):
+                # Extract entities and relationships using keyword extraction
+                try:
+                    kw_extractor = KeywordExtractor(lan="ru", n=3, dedupLim=0.3, top=10)
+                    keywords = kw_extractor.extract_keywords(doc.page_content)
+                    
+                    # Create document node
+                    session.run(
+                        """
+                        MERGE (d:Document {id: $doc_id})
+                        SET d.content = $content,
+                            d.source = $source,
+                            d.title = $title,
+                            d.chunk_index = $chunk_index
+                        """,
+                        doc_id=f"doc_{i}_{doc.metadata.get('source', 'unknown')}",
+                        content=doc.page_content,
+                        source=doc.metadata.get('source', 'unknown'),
+                        title=os.path.basename(doc.metadata.get('source', 'unknown')),
+                        chunk_index=i
+                    )
+                    
+                    # Create entity nodes and relationships
+                    for keyword, score in keywords[:5]:  # Top 5 keywords
+                        session.run(
+                            """
+                            MERGE (e:Entity {name: $entity})
+                            SET e.type = 'keyword'
+                            WITH e
+                            MATCH (d:Document {id: $doc_id})
+                            MERGE (d)-[r:CONTAINS]->(e)
+                            SET r.score = $score
+                            """,
+                            entity=keyword,
+                            doc_id=f"doc_{i}_{doc.metadata.get('source', 'unknown')}",
+                            score=float(score)
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to create relationships for document {i}: {e}")
+    
     def update_documents(self, fixed_documents: List[Document], ids: List[str]) -> tuple[bool, str]:
         """
-        Updates existing documents in the database if their filenames match the uploaded documents.
-
-        This method checks for duplicate filenames between the uploaded documents and
-        the existing documents in the database. If duplicates are found, the existing
-        documents will be deleted before the new documents are added.
-
-        :param fixed_documents: A list of Document objects to be uploaded.
-        :param ids: A list of identifiers corresponding to the documents being uploaded.
-        :return: A tuple containing a boolean indicating whether the update was successful,
-                 and a message providing feedback on the operation.
+        Updates existing documents in the database (Neo4j or Chroma fallback).
         """
-        data: dict = self.db.get()
-        files_db = {os.path.basename(dict_data['source']) for dict_data in data["metadatas"]}
-        files_load = {os.path.basename(dict_data.metadata["source"]) for dict_data in fixed_documents}
-        if same_files := files_load & files_db:
-            gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
-            for file in same_files:
-                pattern: Pattern[str] = re.compile(fr'{file.replace(".txt", "")}\d*$')
-                self.db.delete([x for x in data['ids'] if pattern.match(x)])
-            self.db = self.db.from_documents(
-                documents=fixed_documents,
-                embedding=self.embeddings,
-                ids=ids,
-                persist_directory=DB_DIR,
-                collection_name=self.collection,
-            )
-            file_warning = f"Загружено {len(fixed_documents)} фрагментов! Можно задавать вопросы."
-            return True, file_warning
-        return False, "Фрагменты ещё не загружены!"
+        try:
+            if self.neo4j_vector:
+                # Neo4j approach
+                # Check for existing documents and remove duplicates
+                existing_docs = self._get_existing_document_names()
+                new_files = {os.path.basename(doc.metadata["source"]) for doc in fixed_documents}
+                
+                if same_files := new_files & existing_docs:
+                    gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
+                    self._delete_documents_by_names(list(same_files))
+                
+                # Add documents to Neo4j vector store
+                self.neo4j_vector.add_documents(fixed_documents, ids=ids)
+                
+                # Create graph relationships
+                self._create_graph_relationships(fixed_documents)
+                
+                file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
+                return True, file_warning
+            
+            elif self.db:
+                # Fallback to Chroma
+                data: dict = self.db.get()
+                files_db = {os.path.basename(dict_data['source']) for dict_data in data["metadatas"]}
+                files_load = {os.path.basename(dict_data.metadata["source"]) for dict_data in fixed_documents}
+                if same_files := files_load & files_db:
+                    gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
+                    for file in same_files:
+                        pattern: Pattern[str] = re.compile(fr'{file.replace(".txt", "")}\d*$')
+                        self.db.delete([x for x in data['ids'] if pattern.match(x)])
+                
+                self.db = self.db.from_documents(
+                    documents=fixed_documents,
+                    embedding=self.embeddings,
+                    ids=ids,
+                    persist_directory=DB_DIR,
+                    collection_name=self.collection,
+                )
+                file_warning = f"Загружено {len(fixed_documents)} фрагментов в Chroma! Можно задавать вопросы."
+                return True, file_warning
+            
+            return False, "База данных не инициализирована!"
+            
+        except Exception as e:
+            logger.error(f"Error updating documents: {e}")
+            return False, f"Ошибка при обновлении документов: {str(e)}"
 
     def _filter_valid_documents(self, documents: List[Document]) -> List[Document]:
         """
@@ -531,39 +666,61 @@ class DocumentManager:
         chunk_overlap: int
     ):
         """
-        Build an index from the provided document file paths by loading, processing,
-        and splitting the documents into manageable chunks.
+        Build an index from the provided document file paths using Neo4j GraphRAG or Chroma fallback.
 
         :param file_paths: A list of temporary file paths from which to load documents.
         :param chunk_size: The maximum size of each chunk of text after splitting.
         :param chunk_overlap: The number of overlapping characters between chunks to maintain context.
-        :return: A warning message indicating the number of fragments loaded and readiness for queries,
-                 or any warnings encountered during the update process.
+        :return: A warning message indicating the number of fragments loaded and readiness for queries.
         """
-        load_documents: List[Document] = [self.load_document_from_file(path.name) for path in file_paths]
-        text_splitter: RecursiveCharacterTextSplitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size, chunk_overlap=chunk_overlap
-        )
-        documents = text_splitter.split_documents(load_documents)
-        fixed_documents = self._filter_valid_documents(documents)
+        try:
+            # Load and process documents
+            load_documents: List[Document] = [self.load_document_from_file(path.name) for path in file_paths]
+            text_splitter: RecursiveCharacterTextSplitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size, chunk_overlap=chunk_overlap
+            )
+            documents = text_splitter.split_documents(load_documents)
+            fixed_documents = self._filter_valid_documents(documents)
 
-        ids: List[str] = [
-            f"{os.path.basename(doc.metadata['source']).replace('.txt', '')}{i}"
-            for i, doc in enumerate(fixed_documents)
-        ]
-        is_updated, file_warning = self.update_documents(fixed_documents, ids)
-        if is_updated:
+            ids: List[str] = [
+                f"{os.path.basename(doc.metadata['source']).replace('.txt', '')}{i}"
+                for i, doc in enumerate(fixed_documents)
+            ]
+            
+            # Try to update using Neo4j or Chroma
+            is_updated, file_warning = self.update_documents(fixed_documents, ids)
+            if is_updated:
+                return file_warning
+            
+            # Fallback: create new collection
+            if self.neo4j_vector:
+                # Neo4j approach
+                self.neo4j_vector.add_documents(fixed_documents, ids=ids)
+                self._create_graph_relationships(fixed_documents)
+                file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
+            elif self.db:
+                # Chroma approach
+                self.db = self.db.from_documents(
+                    documents=fixed_documents,
+                    embedding=self.embeddings,
+                    ids=ids,
+                    persist_directory=DB_DIR,
+                    collection_name=self.collection,
+                )
+                file_warning = f"Загружено {len(fixed_documents)} фрагментов в Chroma! Можно задавать вопросы."
+            else:
+                return "Ошибка: не удалось инициализировать базу данных!"
+            
+            try:
+                os.chmod(FILES_DIR, 0o0777)
+            except:
+                pass  # Ignore permission errors
+                
             return file_warning
-        self.db = self.db.from_documents(
-            documents=fixed_documents,
-            embedding=self.embeddings,
-            ids=ids,
-            persist_directory=DB_DIR,
-            collection_name=self.collection,
-        )
-        file_warning = f"Загружено {len(fixed_documents)} фрагментов! Можно задавать вопросы."
-        os.chmod(FILES_DIR, 0o0777)
-        return file_warning
+            
+        except Exception as e:
+            logger.error(f"Error indexing documents: {e}")
+            return f"Ошибка при индексации документов: {str(e)}"
 
     def lemmatize(self, texts: List[str]) -> List[str]:
         """
@@ -600,32 +757,199 @@ class DocumentManager:
         """
         return self.log_entries if self.log_entries else []
     
+    def _get_existing_document_names(self) -> set:
+        """
+        Get existing document names from Neo4j.
+        """
+        if not self.graph_driver:
+            return set()
+        
+        try:
+            with self.graph_driver.session() as session:
+                result = session.run("MATCH (d:Document) RETURN DISTINCT d.title as title")
+                return {record["title"] for record in result if record["title"]}
+        except Exception as e:
+            logger.error(f"Error getting existing documents: {e}")
+            return set()
+    
+    def _delete_documents_by_names(self, filenames: List[str]):
+        """
+        Delete documents by filenames from Neo4j.
+        """
+        if not self.graph_driver:
+            return
+        
+        try:
+            with self.graph_driver.session() as session:
+                for filename in filenames:
+                    session.run(
+                        "MATCH (d:Document {title: $title}) DETACH DELETE d",
+                        title=filename
+                    )
+        except Exception as e:
+            logger.error(f"Error deleting documents: {e}")
+    
     def get_rag_context(self, query: str, k_documents: int = 6) -> Tuple[str, List[str]]:
         """
-        Get RAG context from documents for internal processing.
+        Get RAG context from documents using Neo4j GraphRAG or Chroma fallback.
         
         :param query: User query for RAG search
         :param k_documents: Number of documents to retrieve
         :return: Tuple of (clean_context, sources)
         """
-        if not self.db:
+        try:
+            if self.neo4j_vector:
+                # Neo4j GraphRAG approach
+                docs = self.neo4j_vector.similarity_search_with_score(query, k=k_documents)
+                if not docs:
+                    return "", []
+                
+                # Get additional context from graph relationships
+                graph_context = self._get_graph_context(query)
+                
+                clean_chunks = []
+                sources = []
+                
+                for doc, score in docs:
+                    clean_chunks.append(f"Score: {round(score, 2)}\nText: {doc.page_content}")
+                    source = doc.metadata.get("source", "unknown")
+                    sources.append(os.path.basename(source) if source != "unknown" else "neo4j_graph")
+                
+                # Add graph context if available
+                if graph_context:
+                    clean_chunks.append(f"Graph Context:\n{graph_context}")
+                    sources.append("neo4j_relationships")
+                
+                clean_context = "\n\n".join(clean_chunks)
+                return clean_context, sources
+                
+            elif self.neo4j_graph:
+                # Neo4j graph-only approach (without vector search)
+                graph_context = self._get_graph_context_only(query, k_documents)
+                if graph_context:
+                    return graph_context, ["neo4j_graph_search"]
+                return "", []
+                
+            elif self.db:
+                # Fallback to Chroma
+                docs = self.db.similarity_search_with_score(query, k_documents)
+                if not docs:
+                    return "", []
+                    
+                clean_chunks = []
+                sources = []
+                
+                for doc in docs:
+                    clean_chunks.append(f"Score: {round(doc[1], 2)}\nText: {doc[0].page_content}")
+                    sources.append(os.path.basename(doc[0].metadata["source"]))
+                
+                clean_context = "\n\n".join(clean_chunks)
+                return clean_context, sources
+            
             return "", []
             
-        docs = self.db.similarity_search_with_score(query, k_documents)
-        if not docs:
+        except Exception as e:
+            logger.error(f"Error getting RAG context: {e}")
             return "", []
+    
+    def _get_graph_context(self, query: str) -> str:
+        """
+        Get additional context from Neo4j graph relationships.
+        """
+        if not self.neo4j_graph:
+            return ""
+        
+        try:
+            # Extract entities from query
+            kw_extractor = KeywordExtractor(lan="ru", n=2, dedupLim=0.5, top=3)
+            keywords = kw_extractor.extract_keywords(query)
             
-        # Clean context without HTML for internal processing
-        import re
-        clean_chunks = []
-        sources = []
+            if not keywords:
+                return ""
+            
+            # Find related entities and documents
+            query_cypher = """
+            MATCH (d:Document)-[r:CONTAINS]->(e:Entity)
+            WHERE e.name IN $keywords
+            RETURN d.title as document, e.name as entity, r.score as relevance
+            ORDER BY r.score DESC
+            LIMIT 5
+            """
+            
+            result = self.neo4j_graph.query(
+                query_cypher, 
+                {"keywords": [kw[0] for kw in keywords[:3]]}
+            )
+            
+            if result:
+                context_parts = []
+                for record in result:
+                    context_parts.append(
+                        f"Document: {record['document']} contains '{record['entity']}' (relevance: {record['relevance']:.2f})"
+                    )
+                return "\n".join(context_parts)
+            
+        except Exception as e:
+            logger.error(f"Error getting graph context: {e}")
         
-        for doc in docs:
-            clean_chunks.append(f"Score: {round(doc[1], 2)}\nText: {doc[0].page_content}")
-            sources.append(os.path.basename(doc[0].metadata["source"]))
+        return ""
+    
+    def _get_graph_context_only(self, query: str, k_documents: int = 6) -> str:
+        """
+        Get context using only Neo4j graph search (without vector embeddings).
+        """
+        if not self.neo4j_graph:
+            return ""
         
-        clean_context = "\n\n".join(clean_chunks)
-        return clean_context, sources
+        try:
+            # Extract entities from query
+            kw_extractor = KeywordExtractor(lan="ru", n=2, dedupLim=0.5, top=5)
+            keywords = kw_extractor.extract_keywords(query)
+            
+            if not keywords:
+                # Fallback to full-text search in graph
+                query_cypher = """
+                MATCH (d:Document)
+                WHERE d.content CONTAINS $query_text
+                RETURN d.content as content, d.title as source
+                ORDER BY size(d.content) DESC
+                LIMIT $limit
+                """
+                
+                result = self.neo4j_graph.query(
+                    query_cypher,
+                    {"query_text": query[:100], "limit": k_documents}
+                )
+            else:
+                # Search by extracted keywords
+                query_cypher = """
+                MATCH (d:Document)-[r:CONTAINS]->(e:Entity)
+                WHERE e.name IN $keywords
+                WITH d, AVG(r.score) as avg_score
+                ORDER BY avg_score DESC
+                LIMIT $limit
+                RETURN d.content as content, d.title as source, avg_score
+                """
+                
+                result = self.neo4j_graph.query(
+                    query_cypher, 
+                    {"keywords": [kw[0] for kw in keywords[:5]], "limit": k_documents}
+                )
+            
+            if result:
+                context_parts = []
+                for i, record in enumerate(result):
+                    score = record.get('avg_score', 0.5)
+                    content = record['content'][:500] + "..." if len(record['content']) > 500 else record['content']
+                    context_parts.append(
+                        f"Score: {score:.2f}\nSource: {record['source']}\nText: {content}"
+                    )
+                return "\n\n".join(context_parts)
+            
+        except Exception as e:
+            logger.error(f"Error getting graph-only context: {e}")
+        
+        return ""
 
     def retrieve_documents(
         self,
@@ -635,8 +959,8 @@ class DocumentManager:
         uid: str
     ) -> Tuple[str, list]:
         """
-        Retrieves relevant documents using RAG search for UI display.
-        Only shows RAG results from documents, logs are handled separately.
+        Retrieves relevant documents using GraphRAG search for UI display.
+        Uses Neo4j GraphRAG or Chroma fallback.
 
         :param history: The conversation history as a list of message pairs (user, bot responses).
         :param collection_radio: The selected collection mode for document retrieval.
@@ -653,32 +977,67 @@ class DocumentManager:
 
         last_user_message = history[-1].get("content")
         
-        # RAG search for documents - always show in UI if database is available
-        if self.db:
-            docs = self.db.similarity_search_with_score(last_user_message, k_documents)
-            if docs:
-                scores: list = []
-                data = defaultdict(str)
+        try:
+            # Try Neo4j GraphRAG first
+            if self.neo4j_vector:
+                docs = self.neo4j_vector.similarity_search_with_score(last_user_message, k=k_documents)
+                if docs:
+                    scores: list = []
+                    data = defaultdict(str)
+                    graph_context = self._get_graph_context(last_user_message)
 
-                for doc in docs:
-                    url = (
-                        f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
-                        rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
-                    )
-                    document: str = f"Document - {url} ↓"
-                    score: float = round(doc[1], 2)
-                    scores.append(score)
-                    data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
+                    for doc, score in docs:
+                        source = doc.metadata.get("source", "neo4j_graph")
+                        if source != "neo4j_graph":
+                            url = f'<a href="file/{source}" target="_blank" rel="noopener noreferrer">{os.path.basename(source)}</a>'
+                        else:
+                            url = "Neo4j Graph"
+                        
+                        document: str = f"Document - {url} ↓"
+                        score_rounded: float = round(score, 2)
+                        scores.append(score_rounded)
+                        data[document] += f"\n\nScore: {score_rounded}, Text: {doc.page_content}"
+                    
+                    # Add graph relationships if available
+                    if graph_context:
+                        data["Graph Relations ↓"] += f"\n\n{graph_context}"
 
-                list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
-                logger.info(f"Retrieved {len(docs)} RAG documents for UI display [uid - {uid}]")
-                
-                return "\n\n\n".join(list_data), scores
-            else:
-                return "No relevant documents found", []
-        
-        # If no database available, show appropriate message
-        return "Документы не загружены в RAG систему", []
+                    list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
+                    logger.info(f"Retrieved {len(docs)} GraphRAG documents for UI display [uid - {uid}]")
+                    
+                    return "\n\n\n".join(list_data), scores
+                else:
+                    return "No relevant documents found in Neo4j GraphRAG", []
+            
+            # Fallback to Chroma
+            elif self.db:
+                docs = self.db.similarity_search_with_score(last_user_message, k_documents)
+                if docs:
+                    scores: list = []
+                    data = defaultdict(str)
+
+                    for doc in docs:
+                        url = (
+                            f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
+                            rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
+                        )
+                        document: str = f"Document - {url} ↓"
+                        score: float = round(doc[1], 2)
+                        scores.append(score)
+                        data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
+
+                    list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
+                    logger.info(f"Retrieved {len(docs)} Chroma documents for UI display [uid - {uid}]")
+                    
+                    return "\n\n\n".join(list_data), scores
+                else:
+                    return "No relevant documents found in Chroma", []
+            
+            return "База данных не инициализирована", []
+            
+        except Exception as e:
+            logger.error(f"Error retrieving documents: {e}")
+            return f"Ошибка при поиске документов: {str(e)}", []
     
     def get_all_logs(self) -> List[str]:
         """
@@ -690,41 +1049,61 @@ class DocumentManager:
 
     def list_ingested_documents(self):
         """
-        Loads the database and retrieves a list of ingested document filenames.
-
-        This method initializes or reloads the database connection, retrieves document metadata,
-        and compiles a list of the filenames of previously ingested documents, returning them
-        in a format suitable for UI updates.
+        Retrieves a list of ingested document filenames from Neo4j or Chroma.
 
         :return: An update object for UI elements with the current list of ingested document filenames.
         """
-        self.db = self.initialize_database()
-        files = {
-            os.path.basename(ingested_document["source"])
-            for ingested_document in self.db.get()["metadatas"]
-        }
-        return gr.update(choices=list(files))
+        try:
+            files = set()
+            
+            if self.neo4j_vector and self.graph_driver:
+                # Get files from Neo4j
+                with self.graph_driver.session() as session:
+                    result = session.run("MATCH (d:Document) RETURN DISTINCT d.title as title")
+                    files = {record["title"] for record in result if record["title"]}
+            
+            elif self.db:
+                # Fallback to Chroma
+                self.db = self.initialize_database()
+                if self.db:
+                    files = {
+                        os.path.basename(ingested_document["source"])
+                        for ingested_document in self.db.get()["metadatas"]
+                    }
+            
+            return gr.update(choices=list(files))
+            
+        except Exception as e:
+            logger.error(f"Error listing documents: {e}")
+            return gr.update(choices=[])
 
     def delete_documents(self, documents: list):
         """
-        Deletes specified documents from the database.
-
-        This method takes a list of document filenames to delete, searches the database for matching
-        document entries, and deletes those that match. It then returns an updated list of the
-        remaining ingested document filenames.
+        Deletes specified documents from Neo4j or Chroma database.
 
         :param documents: List of document filenames (without paths) to delete from the database.
         :return: An update object for the UI element containing the list of remaining ingested documents.
         """
         try:
-            all_documents: dict = self.db.get()
-            if for_delete_ids := [
-                doc_id
-                for ingested_document, doc_id in zip(all_documents["metadatas"], all_documents["ids"])
-                if os.path.basename(ingested_document["source"]) in documents
-            ]:
-                self.db.delete(for_delete_ids)
+            if self.neo4j_vector and self.graph_driver:
+                # Delete from Neo4j
+                self._delete_documents_by_names(documents)
+                # Also delete from vector store if possible
+                # Note: Neo4jVector doesn't have a direct delete by filename method
+                # This would require custom implementation
+                
+            elif self.db:
+                # Delete from Chroma
+                all_documents: dict = self.db.get()
+                if for_delete_ids := [
+                    doc_id
+                    for ingested_document, doc_id in zip(all_documents["metadatas"], all_documents["ids"])
+                    if os.path.basename(ingested_document["source"]) in documents
+                ]:
+                    self.db.delete(for_delete_ids)
+            
             return self.list_ingested_documents()
+            
         except Exception as e:
             logger.error(f"Error during document deletion: {e}")
             return gr.update(choices=[])
@@ -1324,8 +1703,31 @@ class UIManager:
             self.document_manager  # Pass document_manager for multi-agent system
         )
         
+        # Initialize Neo4j directories for Docker volumes
+        self._create_neo4j_directories()
+        
         # Текущая сессия диалога
         self.current_session_id: str = str(uuid.uuid4())
+    
+    def _create_neo4j_directories(self):
+        """
+        Create Neo4j directories for Docker volumes.
+        """
+        try:
+            base_path = "/home/timur/PycharmWork/LocalGPT"
+            neo4j_dirs = [
+                f"{base_path}/neo4j/data",
+                f"{base_path}/neo4j/logs", 
+                f"{base_path}/neo4j/import",
+                f"{base_path}/neo4j/plugins"
+            ]
+            
+            for dir_path in neo4j_dirs:
+                os.makedirs(dir_path, exist_ok=True)
+                logger.info(f"Created Neo4j directory: {dir_path}")
+                
+        except Exception as e:
+            logger.error(f"Error creating Neo4j directories: {e}")
 
     def create_new_dialog(self) -> tuple:
         """
