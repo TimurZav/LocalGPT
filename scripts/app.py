@@ -13,6 +13,7 @@ from __init__ import *
 from gradio_modal import Modal
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
+import nltk
 from functions.functions import *
 from transformers import pipeline
 from neo4j import GraphDatabase
@@ -415,6 +416,9 @@ class DocumentManager:
         self.csv_logs_data: pd.DataFrame = pd.DataFrame()  # CSV logs data
         self.data_path: str = "/home/timur/PycharmWork/LocalGPT/data2"  # Path to data folder
         
+        # Initialize stopwords for better keyword extraction
+        self._init_stopwords()
+        
         # Initialize Neo4j components
         self._initialize_neo4j()
 
@@ -435,6 +439,102 @@ class DocumentManager:
         except Exception as e:
             logger.error(f"Error loading log file {file_path}: {e}")
             self.log_entries = []
+    
+    def _init_stopwords(self):
+        """Initialize stopwords for keyword filtering."""
+        try:
+            # Try to download stopwords if not available
+            try:
+                nltk.data.find('corpora/stopwords')
+            except LookupError:
+                nltk.download('stopwords', quiet=True)
+            
+            # Initialize stopwords for both English and Russian
+            from nltk.corpus import stopwords
+            english_stops = set(stopwords.words('english'))
+            russian_stops = set(stopwords.words('russian'))
+            
+            # Add common technical stopwords
+            technical_stops = {
+                'also', 'would', 'could', 'should', 'may', 'might', 'must',
+                'can', 'will', 'shall', 'one', 'two', 'first', 'second',
+                'get', 'set', 'use', 'using', 'used', 'make', 'made',
+                'way', 'ways', 'new', 'old', 'good', 'bad', 'big', 'small'
+            }
+            
+            self.stopwords = english_stops | russian_stops | technical_stops
+            
+        except Exception as e:
+            logger.warning(f"Failed to initialize stopwords: {e}")
+            # Fallback minimal stopwords
+            self.stopwords = {
+                'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+                'и', 'в', 'на', 'с', 'по', 'для', 'от', 'до', 'из', 'к', 'у', 'о', 'за', 'под', 'над'
+            }
+    
+    def _extract_keywords_improved(self, text: str, language: str = "auto", max_keywords: int = 10) -> List[Tuple[str, float]]:
+        """
+        Improved keyword extraction with stopword filtering and language detection.
+        
+        :param text: Text to extract keywords from
+        :param language: Language code ('en', 'ru', or 'auto' for detection)
+        :param max_keywords: Maximum number of keywords to return
+        :return: List of (keyword, score) tuples
+        """
+        try:
+            # Auto-detect language based on character patterns
+            if language == "auto":
+                # Simple heuristic: if more than 20% cyrillic chars, assume Russian
+                cyrillic_chars = sum(1 for char in text if '\u0400' <= char <= '\u04FF')
+                total_chars = len([char for char in text if char.isalpha()])
+                if total_chars > 0 and cyrillic_chars / total_chars > 0.2:
+                    language = "ru"
+                else:
+                    language = "en"
+            
+            # Configure YAKE extractor based on language
+            kw_extractor = KeywordExtractor(
+                lan=language,
+                n=3,  # Extract up to 3-word phrases
+                dedupLim=0.3,  # Lower threshold for deduplication
+                top=max_keywords * 2,  # Extract more initially for filtering
+                features=None
+            )
+            
+            # Extract keywords
+            keywords = kw_extractor.extract_keywords(text)
+            
+            if not keywords:
+                return []
+            
+            # Filter out stopwords and short terms
+            filtered_keywords = []
+            for keyword, score in keywords:
+                keyword_lower = keyword.lower().strip()
+                
+                # Skip if it's a stopword or too short
+                if (keyword_lower in self.stopwords or 
+                    len(keyword_lower) < 3 or 
+                    keyword_lower.isdigit() or
+                    not any(c.isalpha() for c in keyword_lower)):
+                    continue
+                
+                filtered_keywords.append((keyword, score))
+                
+                if len(filtered_keywords) >= max_keywords:
+                    break
+            
+            # Log extracted keywords for debugging
+            if filtered_keywords:
+                logger.debug(f"Extracted {len(filtered_keywords)} keywords: {[kw[0] for kw in filtered_keywords[:5]]}")
+            else:
+                logger.debug("No keywords extracted after filtering")
+            
+            return filtered_keywords
+            
+        except Exception as e:
+            logger.error(f"Error in improved keyword extraction: {e}")
+            return []
 
     def _initialize_neo4j(self):
         """
@@ -556,10 +656,9 @@ class DocumentManager:
         
         with self.graph_driver.session() as session:
             for i, doc in enumerate(documents):
-                # Extract entities and relationships using keyword extraction
+                # Extract entities and relationships using improved keyword extraction
                 try:
-                    kw_extractor = KeywordExtractor(lan="ru", n=3, dedupLim=0.3, top=10)
-                    keywords = kw_extractor.extract_keywords(doc.page_content)
+                    keywords = self._extract_keywords_improved(doc.page_content, language="auto", max_keywords=8)
                     
                     # Create document node
                     session.run(
@@ -860,9 +959,9 @@ class DocumentManager:
             return ""
         
         try:
-            # Extract entities from query
-            kw_extractor = KeywordExtractor(lan="ru", n=2, dedupLim=0.5, top=3)
-            keywords = kw_extractor.extract_keywords(query)
+            # Extract entities from query using improved extractor
+            keyword_tuples = self._extract_keywords_improved(query, language="auto", max_keywords=5)
+            keywords = [kw[0] for kw in keyword_tuples]  # Extract just the keywords
             
             if not keywords:
                 return ""
@@ -878,7 +977,7 @@ class DocumentManager:
             
             result = self.neo4j_graph.query(
                 query_cypher, 
-                {"keywords": [kw[0] for kw in keywords[:3]]}
+                {"keywords": keywords[:5]}
             )
             
             if result:
@@ -902,9 +1001,9 @@ class DocumentManager:
             return ""
         
         try:
-            # Extract entities from query
-            kw_extractor = KeywordExtractor(lan="ru", n=2, dedupLim=0.5, top=5)
-            keywords = kw_extractor.extract_keywords(query)
+            # Extract entities from query using improved extractor
+            keyword_tuples = self._extract_keywords_improved(query, language="auto", max_keywords=8)
+            keywords = [kw[0] for kw in keyword_tuples]  # Extract just the keywords
             
             if not keywords:
                 # Fallback to full-text search in graph
@@ -933,7 +1032,7 @@ class DocumentManager:
                 
                 result = self.neo4j_graph.query(
                     query_cypher, 
-                    {"keywords": [kw[0] for kw in keywords[:5]], "limit": k_documents}
+                    {"keywords": keywords[:8], "limit": k_documents}
                 )
             
             if result:
