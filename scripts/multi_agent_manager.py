@@ -8,8 +8,8 @@ from typing import Dict, List, Any, Optional, TypedDict, Annotated
 from dataclasses import dataclass
 from enum import Enum
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage
+from langchain_core.prompts import ChatPromptTemplate
 from claude_code_llm import ClaudeCodeLLM
 # from openrouter import ChatOpenRouter
 # from __init__ import MODELS

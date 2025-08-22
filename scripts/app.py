@@ -1,36 +1,31 @@
 import re
 import uuid
+import glob
+import nltk
 import os.path
-import chromadb
 import tempfile
 import numpy as np
 import pandas as pd
 import gradio as gr
 import soundfile as sf
-import glob
 from re import Pattern
 from __init__ import *
 from gradio_modal import Modal
+from neo4j import GraphDatabase
 from tinydb import TinyDB, where
 from yake import KeywordExtractor
-import nltk
 from functions.functions import *
 from transformers import pipeline
-from neo4j import GraphDatabase
 from collections import defaultdict
 from tinydb.queries import QueryLike
 from claude_code_llm import ClaudeCodeLLM
 from datetime import datetime, timedelta
 from langchain.docstore.document import Document
-from langchain_community.vectorstores import Chroma
 from langchain_neo4j import Neo4jVector, Neo4jGraph
-from langchain_community.utilities import SQLDatabase
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.agent_toolkits import create_sql_agent
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import List, Optional, Tuple, AsyncGenerator, cast, Union
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
 
 
@@ -403,9 +398,6 @@ class DocumentManager:
         self.neo4j_graph: Optional[Neo4jGraph] = None
         self.graph_driver = None
         
-        # Legacy Chroma support (for backward compatibility)
-        self.db: Optional[Chroma] = None
-        
         # Other components
         self.segmenter: Segmenter = Segmenter()
         self.morph_vocab: MorphVocab = MorphVocab()
@@ -540,56 +532,35 @@ class DocumentManager:
         """
         Initialize Neo4j connections and components for GraphRAG.
         """
-        try:
-            # Initialize Graph Database driver
-            self.graph_driver = GraphDatabase.driver(
-                self.neo4j_url,
-                auth=(self.neo4j_username, self.neo4j_password)
-            )
-            
-            # Initialize Neo4j Graph for structured queries
-            self.neo4j_graph = Neo4jGraph(
-                url=self.neo4j_url,
-                username=self.neo4j_username,
-                password=self.neo4j_password
-            )
-            
-            # Initialize Neo4j Vector Store for embeddings with safer approach
-            self.neo4j_vector = Neo4jVector.from_existing_graph(
-                embedding=self.embeddings,
-                url=self.neo4j_url,
-                username=self.neo4j_username,
-                password=self.neo4j_password,
-                index_name="document_embeddings",
-                node_label="Document",
-                text_node_properties=["content", "title"],
-                embedding_node_property="embedding"
-            )
-            
-            if self.neo4j_vector:
-                logger.info("Neo4j GraphRAG initialized successfully")
-            else:
-                logger.warning("Neo4j Vector Store not available, will use graph-only approach")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize Neo4j: {e}")
-            # Fallback to Chroma if Neo4j fails
-            self._initialize_chroma_fallback()
-    
-    def _initialize_chroma_fallback(self):
-        """
-        Fallback to Chroma if Neo4j initialization fails.
-        """
-        try:
-            client = chromadb.PersistentClient(path=DB_DIR)
-            self.db = Chroma(
-                client=client,
-                collection_name=self.collection,
-                embedding_function=self.embeddings,
-            )
-            logger.info("Fallback to Chroma database initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize Chroma fallback: {e}")
+        # Initialize Graph Database driver
+        self.graph_driver = GraphDatabase.driver(
+            self.neo4j_url,
+            auth=(self.neo4j_username, self.neo4j_password)
+        )
+        
+        # Initialize Neo4j Graph for structured queries
+        self.neo4j_graph = Neo4jGraph(
+            url=self.neo4j_url,
+            username=self.neo4j_username,
+            password=self.neo4j_password
+        )
+        
+        # Initialize Neo4j Vector Store for embeddings with safer approach
+        self.neo4j_vector = Neo4jVector.from_existing_graph(
+            embedding=self.embeddings,
+            url=self.neo4j_url,
+            username=self.neo4j_username,
+            password=self.neo4j_password,
+            index_name="document_embeddings",
+            node_label="Document",
+            text_node_properties=["content", "title"],
+            embedding_node_property="embedding"
+        )
+        
+        if self.neo4j_vector:
+            logger.info("Neo4j GraphRAG initialized successfully")
+        else:
+            logger.warning("Neo4j Vector Store not available, will use graph-only approach")
     
     def initialize_database(self):
         """
@@ -598,10 +569,7 @@ class DocumentManager:
         if self.neo4j_vector is None:
             self._initialize_neo4j()
         
-        if self.neo4j_vector is None and self.db is None:
-            self._initialize_chroma_fallback()
-        
-        return self.neo4j_vector or self.db
+        return self.neo4j_vector
 
     @staticmethod
     def load_document_from_file(file_path: str) -> Document:
@@ -718,27 +686,6 @@ class DocumentManager:
                 file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
                 return True, file_warning
             
-            elif self.db:
-                # Fallback to Chroma
-                data: dict = self.db.get()
-                files_db = {os.path.basename(dict_data['source']) for dict_data in data["metadatas"]}
-                files_load = {os.path.basename(dict_data.metadata["source"]) for dict_data in fixed_documents}
-                if same_files := files_load & files_db:
-                    gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
-                    for file in same_files:
-                        pattern: Pattern[str] = re.compile(fr'{file.replace(".txt", "")}\d*$')
-                        self.db.delete([x for x in data['ids'] if pattern.match(x)])
-                
-                self.db = self.db.from_documents(
-                    documents=fixed_documents,
-                    embedding=self.embeddings,
-                    ids=ids,
-                    persist_directory=DB_DIR,
-                    collection_name=self.collection,
-                )
-                file_warning = f"Загружено {len(fixed_documents)} фрагментов в Chroma! Можно задавать вопросы."
-                return True, file_warning
-            
             return False, "База данных не инициализирована!"
             
         except Exception as e:
@@ -797,16 +744,7 @@ class DocumentManager:
                 self.neo4j_vector.add_documents(fixed_documents, ids=ids)
                 self._create_graph_relationships(fixed_documents)
                 file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
-            elif self.db:
-                # Chroma approach
-                self.db = self.db.from_documents(
-                    documents=fixed_documents,
-                    embedding=self.embeddings,
-                    ids=ids,
-                    persist_directory=DB_DIR,
-                    collection_name=self.collection,
-                )
-                file_warning = f"Загружено {len(fixed_documents)} фрагментов в Chroma! Можно задавать вопросы."
+            
             else:
                 return "Ошибка: не удалось инициализировать базу данных!"
             
@@ -928,22 +866,6 @@ class DocumentManager:
                 if graph_context:
                     return graph_context, ["neo4j_graph_search"]
                 return "", []
-                
-            elif self.db:
-                # Fallback to Chroma
-                docs = self.db.similarity_search_with_score(query, k_documents)
-                if not docs:
-                    return "", []
-                    
-                clean_chunks = []
-                sources = []
-                
-                for doc in docs:
-                    clean_chunks.append(f"Score: {round(doc[1], 2)}\nText: {doc[0].page_content}")
-                    sources.append(os.path.basename(doc[0].metadata["source"]))
-                
-                clean_context = "\n\n".join(clean_chunks)
-                return clean_context, sources
             
             return "", []
             
@@ -1108,30 +1030,6 @@ class DocumentManager:
                 else:
                     return "No relevant documents found in Neo4j GraphRAG", []
             
-            # Fallback to Chroma
-            elif self.db:
-                docs = self.db.similarity_search_with_score(last_user_message, k_documents)
-                if docs:
-                    scores: list = []
-                    data = defaultdict(str)
-
-                    for doc in docs:
-                        url = (
-                            f"""<a href="file/{doc[0].metadata["source"]}" target="_blank" 
-                            rel="noopener noreferrer">{os.path.basename(doc[0].metadata["source"])}</a>"""
-                        )
-                        document: str = f"Document - {url} ↓"
-                        score: float = round(doc[1], 2)
-                        scores.append(score)
-                        data[document] += f"\n\nScore: {score}, Text: {doc[0].page_content}"
-
-                    list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
-                    logger.info(f"Retrieved {len(docs)} Chroma documents for UI display [uid - {uid}]")
-                    
-                    return "\n\n\n".join(list_data), scores
-                else:
-                    return "No relevant documents found in Chroma", []
-            
             return "База данных не инициализирована", []
             
         except Exception as e:
@@ -1161,15 +1059,6 @@ class DocumentManager:
                     result = session.run("MATCH (d:Document) RETURN DISTINCT d.title as title")
                     files = {record["title"] for record in result if record["title"]}
             
-            elif self.db:
-                # Fallback to Chroma
-                self.db = self.initialize_database()
-                if self.db:
-                    files = {
-                        os.path.basename(ingested_document["source"])
-                        for ingested_document in self.db.get()["metadatas"]
-                    }
-            
             return gr.update(choices=list(files))
             
         except Exception as e:
@@ -1190,16 +1079,6 @@ class DocumentManager:
                 # Also delete from vector store if possible
                 # Note: Neo4jVector doesn't have a direct delete by filename method
                 # This would require custom implementation
-                
-            elif self.db:
-                # Delete from Chroma
-                all_documents: dict = self.db.get()
-                if for_delete_ids := [
-                    doc_id
-                    for ingested_document, doc_id in zip(all_documents["metadatas"], all_documents["ids"])
-                    if os.path.basename(ingested_document["source"]) in documents
-                ]:
-                    self.db.delete(for_delete_ids)
             
             return self.list_ingested_documents()
             
