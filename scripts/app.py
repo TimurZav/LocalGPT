@@ -889,13 +889,10 @@ class DocumentManager:
             if not keywords:
                 return ""
             
-            # Simple fuzzy matching query
+            # Find related entities and documents
             query_cypher = """
             MATCH (d:Document)-[r:CONTAINS]->(e:Entity)
-            WHERE ANY(kw IN $keywords WHERE 
-                toLower(e.name) CONTAINS toLower(kw) OR 
-                toLower(kw) CONTAINS toLower(e.name)
-            )
+            WHERE e.name IN $keywords
             RETURN d.title as document, e.name as entity, r.score as relevance
             ORDER BY r.score DESC
             LIMIT 5
@@ -946,16 +943,14 @@ class DocumentManager:
                     {"query_text": query[:100], "limit": k_documents}
                 )
             else:
-                # Simple fuzzy matching query
+                # Search by extracted keywords
                 query_cypher = """
                 MATCH (d:Document)-[r:CONTAINS]->(e:Entity)
-                WHERE ANY(kw IN $keywords WHERE 
-                    toLower(e.name) CONTAINS toLower(kw) OR 
-                    toLower(kw) CONTAINS toLower(e.name)
-                )
-                RETURN d.title as document, e.name as entity, r.score as relevance
-                ORDER BY r.score DESC
-                LIMIT 5
+                WHERE e.name IN $keywords
+                WITH d, AVG(r.score) as avg_score
+                ORDER BY avg_score DESC
+                LIMIT $limit
+                RETURN d.content as content, d.title as source, avg_score
                 """
                 
                 result = self.neo4j_graph.query(
