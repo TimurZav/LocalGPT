@@ -615,79 +615,26 @@ class DocumentManager:
         lines = [line for line in lines if len(line.strip()) > 2]
         page_content = "\n".join(lines).strip()
         return "" if len(page_content) < 10 else page_content
-
-    def _create_graph_relationships(self, documents: List[Document]):
-        """
-        Create relationships between documents and entities in Neo4j graph.
-        """
-        if not self.graph_driver:
-            return
-        
-        with self.graph_driver.session() as session:
-            for i, doc in enumerate(documents):
-                # Extract entities and relationships using improved keyword extraction
-                try:
-                    keywords = self._extract_keywords_improved(doc.page_content, language="auto", max_keywords=8)
-                    
-                    # Create document node
-                    session.run(
-                        """
-                        MERGE (d:Document {id: $doc_id})
-                        SET d.content = $content,
-                            d.source = $source,
-                            d.title = $title,
-                            d.chunk_index = $chunk_index
-                        """,
-                        doc_id=f"doc_{i}_{doc.metadata.get('source', 'unknown')}",
-                        content=doc.page_content,
-                        source=doc.metadata.get('source', 'unknown'),
-                        title=os.path.basename(doc.metadata.get('source', 'unknown')),
-                        chunk_index=i
-                    )
-                    
-                    # Create entity nodes and relationships
-                    for keyword, score in keywords[:5]:  # Top 5 keywords
-                        session.run(
-                            """
-                            MERGE (e:Entity {name: $entity})
-                            SET e.type = 'keyword'
-                            WITH e
-                            MATCH (d:Document {id: $doc_id})
-                            MERGE (d)-[r:CONTAINS]->(e)
-                            SET r.score = $score
-                            """,
-                            entity=keyword,
-                            doc_id=f"doc_{i}_{doc.metadata.get('source', 'unknown')}",
-                            score=float(score)
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to create relationships for document {i}: {e}")
     
     def update_documents(self, fixed_documents: List[Document], ids: List[str]) -> tuple[bool, str]:
         """
         Updates existing documents in the database (Neo4j or Chroma fallback).
         """
         try:
-            if self.neo4j_vector:
-                # Neo4j approach
-                # Check for existing documents and remove duplicates
-                existing_docs = self._get_existing_document_names()
-                new_files = {os.path.basename(doc.metadata["source"]) for doc in fixed_documents}
-                
-                if same_files := new_files & existing_docs:
-                    gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
-                    self._delete_documents_by_names(list(same_files))
-                
-                # Add documents to Neo4j vector store
-                self.neo4j_vector.add_documents(fixed_documents, ids=ids)
-                
-                # Create graph relationships
-                self._create_graph_relationships(fixed_documents)
-                
-                file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
-                return True, file_warning
+            # Neo4j approach
+            # Check for existing documents and remove duplicates
+            existing_docs = self._get_existing_document_names()
+            new_files = {os.path.basename(doc.metadata["source"]) for doc in fixed_documents}
             
-            return False, "База данных не инициализирована!"
+            if same_files := new_files & existing_docs:
+                gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
+                self._delete_documents_by_names(list(same_files))
+            
+            # Add documents to Neo4j vector store
+            self.neo4j_vector.add_documents(fixed_documents, ids=ids)
+            
+            file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
+            return True, file_warning
             
         except Exception as e:
             logger.error(f"Error updating documents: {e}")
@@ -743,7 +690,6 @@ class DocumentManager:
             if self.neo4j_vector:
                 # Neo4j approach
                 self.neo4j_vector.add_documents(fixed_documents, ids=ids)
-                self._create_graph_relationships(fixed_documents)
                 file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
             
             else:
@@ -759,41 +705,6 @@ class DocumentManager:
         except Exception as e:
             logger.error(f"Error indexing documents: {e}")
             return f"Ошибка при индексации документов: {str(e)}"
-
-    def lemmatize(self, texts: List[str]) -> List[str]:
-        """
-        Лемматизация текста с использованием кэша.
-        :param texts: Исходный текст.
-        :return: Лемматизированный текст.
-        """
-        result = []
-        for text_ in texts:
-            doc = Doc(text_)
-            doc.segment(self.segmenter)
-            doc.tag_morph(self.morph_tagger)
-
-            lemmatized_tokens = []
-            for token in doc.tokens:
-                if token.text in self.cache:
-                    lemma = self.cache[token.text]
-                else:
-                    token.lemmatize(self.morph_vocab)
-                    lemma = token.lemma
-                    self.cache[token.text] = lemma
-                lemmatized_tokens.append(lemma)
-
-            result.append(" ".join(lemmatized_tokens))
-        return result
-
-    def search_docs(self, sentence: str) -> List[str]:
-        """
-        Legacy method - returns all logs for backward compatibility.
-        Use get_all_logs() for clearer intent.
-
-        :param sentence: Предложение или ключевое слово (не используется).
-        :return: Все загруженные логи.
-        """
-        return self.log_entries if self.log_entries else []
     
     def _get_existing_document_names(self) -> set:
         """
@@ -826,152 +737,6 @@ class DocumentManager:
                     )
         except Exception as e:
             logger.error(f"Error deleting documents: {e}")
-    
-    def get_rag_context(self, query: str, k_documents: int = 6) -> Tuple[str, List[str]]:
-        """
-        Get RAG context from documents using Neo4j GraphRAG or Chroma fallback.
-        
-        :param query: User query for RAG search
-        :param k_documents: Number of documents to retrieve
-        :return: Tuple of (clean_context, sources)
-        """
-        try:
-            if self.neo4j_vector:
-                # Neo4j GraphRAG approach
-                docs = self.neo4j_vector.similarity_search_with_score(query, k=k_documents)
-                if not docs:
-                    return "", []
-                
-                # Get additional context from graph relationships
-                graph_context = self._get_graph_context(query)
-                
-                clean_chunks = []
-                sources = []
-                
-                for doc, score in docs:
-                    clean_chunks.append(f"Score: {round(score, 2)}\nText: {doc.page_content}")
-                    source = doc.metadata.get("source", "unknown")
-                    sources.append(os.path.basename(source) if source != "unknown" else "neo4j_graph")
-                
-                # Add graph context if available
-                if graph_context:
-                    clean_chunks.append(f"Graph Context:\n{graph_context}")
-                    sources.append("neo4j_relationships")
-                
-                clean_context = "\n\n".join(clean_chunks)
-                return clean_context, sources
-                
-            elif self.neo4j_graph:
-                # Neo4j graph-only approach (without vector search)
-                graph_context = self._get_graph_context_only(query, k_documents)
-                if graph_context:
-                    return graph_context, ["neo4j_graph_search"]
-                return "", []
-            
-            return "", []
-            
-        except Exception as e:
-            logger.error(f"Error getting RAG context: {e}")
-            return "", []
-    
-    def _get_graph_context(self, query: str) -> str:
-        """
-        Get additional context from Neo4j graph relationships.
-        """
-        if not self.neo4j_graph:
-            return ""
-        
-        try:
-            # Extract entities from query using improved extractor
-            keyword_tuples = self._extract_keywords_improved(query, language="auto", max_keywords=5)
-            keywords = [kw[0] for kw in keyword_tuples]  # Extract just the keywords
-            
-            if not keywords:
-                return ""
-            
-            # Find related entities and documents
-            query_cypher = """
-            MATCH (d:Document)-[r:CONTAINS]->(e:Entity)
-            WHERE e.name IN $keywords
-            RETURN d.title as document, e.name as entity, r.score as relevance
-            ORDER BY r.score DESC
-            LIMIT 5
-            """
-            
-            result = self.neo4j_graph.query(
-                query_cypher, 
-                {"keywords": keywords[:5]}
-            )
-            
-            if result:
-                context_parts = []
-                for record in result:
-                    context_parts.append(
-                        f"Document: {record['document']} contains '{record['entity']}' (relevance: {record['relevance']:.2f})"
-                    )
-                return "\n".join(context_parts)
-            
-        except Exception as e:
-            logger.error(f"Error getting graph context: {e}")
-        
-        return ""
-    
-    def _get_graph_context_only(self, query: str, k_documents: int = 6) -> str:
-        """
-        Get context using only Neo4j graph search (without vector embeddings).
-        """
-        if not self.neo4j_graph:
-            return ""
-        
-        try:
-            # Extract entities from query using improved extractor
-            keyword_tuples = self._extract_keywords_improved(query, language="auto", max_keywords=8)
-            keywords = [kw[0] for kw in keyword_tuples]  # Extract just the keywords
-            
-            if not keywords:
-                # Fallback to full-text search in graph
-                query_cypher = """
-                MATCH (d:Document)
-                WHERE d.content CONTAINS $query_text
-                RETURN d.content as content, d.title as source
-                ORDER BY size(d.content) DESC
-                LIMIT $limit
-                """
-                
-                result = self.neo4j_graph.query(
-                    query_cypher,
-                    {"query_text": query[:100], "limit": k_documents}
-                )
-            else:
-                # Search by extracted keywords
-                query_cypher = """
-                MATCH (d:Document)-[r:CONTAINS]->(e:Entity)
-                WHERE e.name IN $keywords
-                WITH d, AVG(r.score) as avg_score
-                ORDER BY avg_score DESC
-                LIMIT $limit
-                RETURN d.content as content, d.title as source, avg_score
-                """
-                
-                result = self.neo4j_graph.query(
-                    query_cypher, 
-                    {"keywords": keywords[:8], "limit": k_documents}
-                )
-            
-            if result:
-                context_parts = []
-                for i, record in enumerate(result):
-                    score = record.get('avg_score', 0.5)
-                    content = record['content'][:500] + "..." if len(record['content']) > 500 else record['content']
-                    context_parts.append(
-                        f"Score: {score:.2f}\nSource: {record['source']}\nText: {content}"
-                    )
-                return "\n\n".join(context_parts)
-            
-        except Exception as e:
-            logger.error(f"Error getting graph-only context: {e}")
-        
-        return ""
 
     def retrieve_documents(
         self,
@@ -981,14 +746,13 @@ class DocumentManager:
         uid: str
     ) -> Tuple[str, list]:
         """
-        Retrieves relevant documents using GraphRAG search for UI display.
-        Uses Neo4j GraphRAG or Chroma fallback.
-
-        :param history: The conversation history as a list of message pairs (user, bot responses).
-        :param collection_radio: The selected collection mode for document retrieval.
-        :param k_documents: The number of top documents to retrieve based on similarity.
-        :param uid: The unique identifier for the current session, used for logging.
-        :return: A tuple with formatted RAG documents and similarity scores (for UI display only).
+        UI wrapper for get_rag_context to maintain UI compatibility.
+        
+        :param history: The conversation history
+        :param collection_radio: The selected collection mode
+        :param k_documents: The number of documents to retrieve  
+        :param uid: The unique identifier for logging
+        :return: Formatted documents and scores for UI display
         """
         if (
             collection_radio not in MODES
@@ -1000,50 +764,30 @@ class DocumentManager:
         last_user_message = history[-1].get("content")
         
         try:
-            # Try Neo4j GraphRAG first
-            if self.neo4j_vector:
-                docs = self.neo4j_vector.similarity_search_with_score(last_user_message, k=k_documents)
-                if docs:
-                    scores: list = []
-                    data = defaultdict(str)
-                    graph_context = self._get_graph_context(last_user_message)
+            # Use get_rag_context to get documents
+            docs = self.neo4j_vector.similarity_search_with_score(last_user_message, k=k_documents)
+            if docs:
+                scores: list = []
+                data = defaultdict(str)
 
-                    for doc, score in docs:
-                        source = doc.metadata.get("source", "neo4j_graph")
-                        if source != "neo4j_graph":
-                            url = f'<a href="file/{source}" target="_blank" rel="noopener noreferrer">{os.path.basename(source)}</a>'
-                        else:
-                            url = "Neo4j Graph"
-                        
-                        document: str = f"Document - {url} ↓"
-                        score_rounded: float = round(score, 2)
-                        scores.append(score_rounded)
-                        data[document] += f"\n\nScore: {score_rounded}, Text: {doc.page_content}"
+                for doc, score in docs:
+                    source = doc.metadata.get("source", "")
+                    url = f'<a href="file/{source}" target="_blank" rel="noopener noreferrer">{os.path.basename(source)}</a>'
                     
-                    # Add graph relationships if available
-                    if graph_context:
-                        data["Graph Relations ↓"] += f"\n\n{graph_context}"
+                    document: str = f"Document - {url} ↓"
+                    score_rounded: float = round(score, 2)
+                    scores.append(score_rounded)
+                    data[document] += f"\n\nScore: {score_rounded}, Text: {doc.metadata.get('text', '')}"
 
-                    list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
-                    logger.info(f"Retrieved {len(docs)} GraphRAG documents for UI display [uid - {uid}]")
-                    
-                    return "\n\n\n".join(list_data), scores
-                else:
-                    return "No relevant documents found in Neo4j GraphRAG", []
-            
-            return "База данных не инициализирована", []
-            
+                list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
+                logger.info(f"Retrieved {len(docs)} GraphRAG documents for UI display [uid - {uid}]")
+                
+                return "\n\n\n".join(list_data), scores
+            else:
+                return "No relevant documents found in Neo4j GraphRAG", []
         except Exception as e:
-            logger.error(f"Error retrieving documents: {e}")
+            logger.error(f"Error retrieving documents for UI: {e}")
             return f"Ошибка при поиске документов: {str(e)}", []
-    
-    def get_all_logs(self) -> List[str]:
-        """
-        Returns all log entries without any filtering.
-        
-        :return: List of all log entries
-        """
-        return self.log_entries if self.log_entries else []
 
     def list_ingested_documents(self):
         """
@@ -1393,19 +1137,6 @@ class MessageManager:
         return list(reversed(temp_history))
 
     @staticmethod
-    def process_retrieved_docs(retrieved_docs: str) -> str:
-        """
-        Processes the extracted documents by deleting HTML tags.
-
-        :param retrieved_docs: Documents with HTML tags.
-        :return: Documents without HTML tags.
-        """
-        files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
-        for file in files:
-            retrieved_docs = re.sub(fr'<a\s+[^>]*>{file}</a>', file, retrieved_docs)
-        return retrieved_docs
-
-    @staticmethod
     def prepare_chat_history(history: List[dict]) -> List[BaseMessage]:
         """
         Converts the dialog history to the Longchain message format.
@@ -1434,26 +1165,6 @@ class MessageManager:
                 langchain_messages.append(AIMessage(content=content or ""))
 
         return langchain_messages
-
-    def prepare_context_message(self, history: List[dict], retrieved_docs: str, mode: str) -> str:
-        """
-        Prepares a contextual message based on history and documents.
-
-        :param history: The history of dialogue.
-        :param retrieved_docs: Extracted documents.
-        :param mode: Operating mode.
-        :return: Contextual message.
-        """
-        last_user_message: str = history[-1].get("content")
-        processed_docs = self.process_retrieved_docs(retrieved_docs)
-
-        if processed_docs and mode in MODES:
-            last_user_message = (
-                f"Контекст: {processed_docs}\n\nИспользуя только контекст, ответь на вопрос: "
-                f"{last_user_message}"
-            )
-
-        return last_user_message
 
     @staticmethod
     def add_source_references(
@@ -1549,9 +1260,6 @@ class ModelManager:
 
         logger.info(f"Beginning response generation [uid - {uid}]")
 
-        # Get the last user message
-        last_user_message = history[-1].get("content", "") if history else ""
-
         # Use log-based approach
         logger.info(f"Using log-based RAG approach [uid - {uid}]")
         response_text, _ = await self._log_based_approach(
@@ -1575,7 +1283,7 @@ class ModelManager:
         last_user_message = history[-1].get("content", "") if history else ""
         
         # Use Multi-Agent System if logs are enabled and available
-        if use_log_search and self.multi_agent_manager and self.document_manager.log_entries:
+        if use_log_search and self.multi_agent_manager:
             try:
                 logger.info(f"Using multi-agent system (RAG+Logs) with model {model} [uid - {uid}]")
                 # Update model in multi-agent system
@@ -1584,7 +1292,8 @@ class ModelManager:
                 result = self.multi_agent_manager.process_query_sync(
                     query=last_user_message,
                     dialog_history=history,
-                    thread_id=uid
+                    thread_id=uid,
+                    retrieved_docs=retrieved_docs
                 )
                 
                 response_text = result["answer"]
@@ -1603,64 +1312,6 @@ class ModelManager:
                 
             except Exception as e:
                 logger.error(f"Error in multi-agent system, falling back to simple approach: {e}")
-        
-        # Fallback: simple approach without multi-agent system
-        logger.info(f"Using simple approach [uid - {uid}]")
-        
-        files = re.findall(r'<a\s+[^>]*>(.*?)</a>', retrieved_docs)
-        recent_history = self.message_manager.get_recent_history(history)
-        langchain_messages = self.message_manager.prepare_chat_history(recent_history)
-        last_message = self.message_manager.prepare_context_message(history, retrieved_docs, mode)
-        langchain_messages.append(HumanMessage(content=last_message))
-        
-        # Simple hybrid context (fallback)
-        context_parts = []
-        
-        # Get RAG context
-        rag_context, rag_sources = self.document_manager.get_rag_context(
-            last_user_message, 
-            k_documents=8
-        )
-        if rag_context:
-            context_parts.append(f"Контекст из документов:\n{rag_context}")
-            files.extend(rag_sources)
-        
-        # Add logs if enabled
-        if use_log_search and self.document_manager.log_entries:
-            # Ограничение логов для избежания ошибки "Argument list too long"
-            max_logs_chars = 50000  # Максимальный размер логов в символах
-            max_log_entries = 1000   # Максимальное количество записей логов
-            
-            # Берем последние записи и ограничиваем по размеру
-            log_entries = self.document_manager.log_entries[-max_log_entries:]
-            all_logs = "\n".join(log_entries)
-            
-            # Если логи все еще слишком большие, обрезаем по символам
-            if len(all_logs) > max_logs_chars:
-                all_logs = all_logs[-max_logs_chars:]
-                # Убеждаемся, что не обрезали строку посередине
-                first_newline = all_logs.find('\n')
-                if first_newline > 0:
-                    all_logs = all_logs[first_newline + 1:]
-            
-            context_parts.append(f"Последние логи системы ({len(log_entries)} записей):\n{all_logs}")
-            files.append("logs")
-        
-        # Combine context
-        if context_parts:
-            full_context = "\n\n" + "\n\n".join(context_parts)
-            enhanced_message = f"{last_message}{full_context}"
-            langchain_messages[-1] = HumanMessage(content=enhanced_message)
-        
-        # Generate response
-        try:
-            response = self.llm.invoke(langchain_messages)
-            response_text = re.sub(r'<think>.*?</think>', '', response.content, flags=re.DOTALL).strip()
-        except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            response_text = f"Ошибка при генерации ответа: {str(e)}"
-
-        return response_text, files
 
 
 

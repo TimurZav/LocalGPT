@@ -40,6 +40,7 @@ class GraphState(TypedDict):
     messages: Annotated[List, add_messages]
     original_query: str
     dialog_history: Optional[List[dict]]  # История диалога для контекста
+    retrieved_docs: str  # Документы, полученные из UI
     query_type: str
     rag_result: Optional[AgentResult]
     logs_result: Optional[AgentResult]
@@ -205,8 +206,9 @@ class MultiAgentManager:
             query = state["original_query"]
             dialog_history = self._format_dialog_history(state.get("dialog_history"))
             
-            # Получение контекста из документов через RAG поиск (напрямую)
-            rag_context, sources = self.document_manager.get_rag_context(query, k_documents=8)
+            # Получение контекста из документов через переданные retrieved_docs
+            rag_context = state.get("retrieved_docs", "")
+            sources = ["documents"]  # Общий источник для переданных документов
             
             if not rag_context:
                 rag_result = AgentResult(
@@ -375,7 +377,7 @@ class MultiAgentManager:
 
 
 
-    async def process_query(self, query: str, dialog_history: Optional[List[dict]] = None, thread_id: str = "default") -> Dict[str, Any]:
+    async def process_query(self, query: str, dialog_history: Optional[List[dict]] = None, thread_id: str = "default", retrieved_docs: str = "") -> Dict[str, Any]:
         """Основной метод обработки запроса"""
         try:
             # Инициализация состояния
@@ -383,6 +385,7 @@ class MultiAgentManager:
                 "messages": [HumanMessage(content=query)],
                 "original_query": query,
                 "dialog_history": dialog_history,
+                "retrieved_docs": retrieved_docs,
                 "query_type": "",
                 "rag_result": None,
                 "logs_result": None,
@@ -416,7 +419,7 @@ class MultiAgentManager:
                 "metadata": {"error": str(e)}
             }
 
-    def process_query_sync(self, query: str, dialog_history: Optional[List[dict]] = None, thread_id: str = "default") -> Dict[str, Any]:
+    def process_query_sync(self, query: str, dialog_history: Optional[List[dict]] = None, thread_id: str = "default", retrieved_docs: str = "") -> Dict[str, Any]:
         """Синхронная версия обработки запроса"""
         try:
             # Инициализация состояния
@@ -424,6 +427,7 @@ class MultiAgentManager:
                 "messages": [HumanMessage(content=query)],
                 "original_query": query,
                 "dialog_history": dialog_history,
+                "retrieved_docs": retrieved_docs,
                 "query_type": "",
                 "rag_result": None,
                 "logs_result": None,
