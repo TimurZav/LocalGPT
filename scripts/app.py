@@ -1,19 +1,15 @@
-import re
 import uuid
 import glob
-import nltk
 import os.path
 import tempfile
 import numpy as np
 import pandas as pd
 import gradio as gr
 import soundfile as sf
-from re import Pattern
 from __init__ import *
 from gradio_modal import Modal
 from neo4j import GraphDatabase
 from tinydb import TinyDB, where
-from yake import KeywordExtractor
 from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
@@ -26,7 +22,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import List, Optional, Tuple, AsyncGenerator, cast, Union
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from natasha import MorphVocab, Doc, Segmenter, NewsMorphTagger, NewsEmbedding
+from natasha import MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -408,9 +404,6 @@ class DocumentManager:
         self.csv_logs_data: pd.DataFrame = pd.DataFrame()  # CSV logs data
         self.data_path: str = "/home/timur/PycharmWork/LocalGPT/data2"  # Path to data folder
         
-        # Initialize stopwords for better keyword extraction
-        self._init_stopwords()
-        
         # Initialize Neo4j components
         self._initialize_neo4j()
 
@@ -431,102 +424,6 @@ class DocumentManager:
         except Exception as e:
             logger.error(f"Error loading log file {file_path}: {e}")
             self.log_entries = []
-    
-    def _init_stopwords(self):
-        """Initialize stopwords for keyword filtering."""
-        try:
-            # Try to download stopwords if not available
-            try:
-                nltk.data.find('corpora/stopwords')
-            except LookupError:
-                nltk.download('stopwords', quiet=True)
-            
-            # Initialize stopwords for both English and Russian
-            from nltk.corpus import stopwords
-            english_stops = set(stopwords.words('english'))
-            russian_stops = set(stopwords.words('russian'))
-            
-            # Add common technical stopwords
-            technical_stops = {
-                'also', 'would', 'could', 'should', 'may', 'might', 'must',
-                'can', 'will', 'shall', 'one', 'two', 'first', 'second',
-                'get', 'set', 'use', 'using', 'used', 'make', 'made',
-                'way', 'ways', 'new', 'old', 'good', 'bad', 'big', 'small'
-            }
-            
-            self.stopwords = english_stops | russian_stops | technical_stops
-            
-        except Exception as e:
-            logger.warning(f"Failed to initialize stopwords: {e}")
-            # Fallback minimal stopwords
-            self.stopwords = {
-                'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
-                'и', 'в', 'на', 'с', 'по', 'для', 'от', 'до', 'из', 'к', 'у', 'о', 'за', 'под', 'над'
-            }
-    
-    def _extract_keywords_improved(self, text: str, language: str = "auto", max_keywords: int = 10) -> List[Tuple[str, float]]:
-        """
-        Improved keyword extraction with stopword filtering and language detection.
-        
-        :param text: Text to extract keywords from
-        :param language: Language code ('en', 'ru', or 'auto' for detection)
-        :param max_keywords: Maximum number of keywords to return
-        :return: List of (keyword, score) tuples
-        """
-        try:
-            # Auto-detect language based on character patterns
-            if language == "auto":
-                # Simple heuristic: if more than 20% cyrillic chars, assume Russian
-                cyrillic_chars = sum(1 for char in text if '\u0400' <= char <= '\u04FF')
-                total_chars = len([char for char in text if char.isalpha()])
-                if total_chars > 0 and cyrillic_chars / total_chars > 0.2:
-                    language = "ru"
-                else:
-                    language = "en"
-            
-            # Configure YAKE extractor based on language
-            kw_extractor = KeywordExtractor(
-                lan=language,
-                n=3,  # Extract up to 3-word phrases
-                dedupLim=0.3,  # Lower threshold for deduplication
-                top=max_keywords * 2,  # Extract more initially for filtering
-                features=None
-            )
-            
-            # Extract keywords
-            keywords = kw_extractor.extract_keywords(text)
-            
-            if not keywords:
-                return []
-            
-            # Filter out stopwords and short terms
-            filtered_keywords = []
-            for keyword, score in keywords:
-                keyword_lower = keyword.lower().strip()
-                
-                # Skip if it's a stopword or too short
-                if (keyword_lower in self.stopwords or 
-                    len(keyword_lower) < 3 or 
-                    keyword_lower.isdigit() or
-                    not any(c.isalpha() for c in keyword_lower)):
-                    continue
-                
-                filtered_keywords.append((keyword, score))
-                
-                if len(filtered_keywords) >= max_keywords:
-                    break
-            
-            # Log extracted keywords for debugging
-            if filtered_keywords:
-                logger.debug(f"Extracted {len(filtered_keywords)} keywords: {[kw[0] for kw in filtered_keywords[:5]]}")
-            else:
-                logger.debug("No keywords extracted after filtering")
-            
-            return filtered_keywords
-            
-        except Exception as e:
-            logger.error(f"Error in improved keyword extraction: {e}")
-            return []
 
     def _initialize_neo4j(self):
         """
