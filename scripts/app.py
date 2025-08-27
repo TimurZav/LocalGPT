@@ -1,6 +1,5 @@
 import uuid
 import glob
-import nltk
 import os.path
 import tempfile
 import numpy as np
@@ -11,19 +10,20 @@ from __init__ import *
 from gradio_modal import Modal
 from neo4j import GraphDatabase
 from tinydb import TinyDB, where
-from yake import KeywordExtractor
 from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
 from tinydb.queries import QueryLike
-from claude_code_llm import ClaudeCodeLLM
+from langchain_openai import ChatOpenAI
 from datetime import datetime, timedelta
+from claude_code_llm import ClaudeCodeLLM
 from langchain.docstore.document import Document
-from langchain_neo4j import Neo4jVector, Neo4jGraph
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import List, Optional, Tuple, AsyncGenerator, cast, Union
+from langchain_neo4j import Neo4jVector, Neo4jGraph, GraphCypherQAChain
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_experimental.graph_transformers import LLMGraphTransformer
 from natasha import MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
 
 
@@ -472,9 +472,6 @@ class DocumentManager:
         Initialize LLM transformer for knowledge graph construction
         """
         try:
-            from langchain_experimental.graph_transformers import LLMGraphTransformer
-            from langchain_openai import ChatOpenAI
-            
             self.llm = ChatOpenAI(temperature=0)
             self.llm_transformer = LLMGraphTransformer(llm=self.llm)
             logger.info("LLM Graph Transformer initialized successfully")
@@ -836,9 +833,7 @@ class DocumentManager:
         if not self.neo4j_graph or not self.llm:
             return ""
         
-        try:
-            from langchain_neo4j import GraphCypherQAChain
-            
+        try:            
             # Создаём GraphCypherQAChain для интеллектуального поиска
             chain = GraphCypherQAChain.from_llm(
                 llm=self.llm, 
