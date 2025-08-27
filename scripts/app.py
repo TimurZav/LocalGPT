@@ -411,6 +411,11 @@ class DocumentManager:
         
         # Initialize Neo4j components
         self._initialize_neo4j()
+        
+        # Initialize LLM for graph construction
+        self.llm = None
+        self.llm_transformer = None
+        self._initialize_llm_transformer()
 
     def load_log_file(self, file_path: str) -> None:
         """
@@ -561,6 +566,47 @@ class DocumentManager:
         else:
             logger.warning("Neo4j Vector Store not available, will use graph-only approach")
     
+    def _initialize_llm_transformer(self):
+        """
+        Initialize LLM transformer for knowledge graph construction
+        """
+        try:
+            from langchain_experimental.graph_transformers import LLMGraphTransformer
+            from langchain_openai import ChatOpenAI
+            
+            self.llm = ChatOpenAI(temperature=0)
+            self.llm_transformer = LLMGraphTransformer(llm=self.llm)
+            logger.info("LLM Graph Transformer initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize LLM Graph Transformer: {e}")
+            logger.info("Will fall back to keyword-based graph construction")
+    
+    def _normalize_neo4j_label(self, label: str) -> str:
+        """
+        Нормализация лейбла для Neo4j (убирает пробелы и спец. символы)
+        
+        :param label: Исходный лейбл
+        :return: Нормализованный лейбл
+        """
+        if not label:
+            return "Entity"
+        
+        # Заменяем пробелы, дефисы и другие символы на подчёркивания
+        normalized = label.replace(" ", "_").replace("-", "_").replace("'", "").replace(".", "_")
+        
+        # Удаляем недопустимые символы и оставляем только буквы, цифры и подчёркивания
+        normalized = "".join(c for c in normalized if c.isalnum() or c == "_")
+        
+        # Убираем начальные цифры (Neo4j лейблы не могут начинаться с цифры)
+        while normalized and normalized[0].isdigit():
+            normalized = normalized[1:]
+        
+        # Если после очистки лейбл пустой, возвращаем дефолтный
+        if not normalized:
+            return "Entity"
+        
+        return normalized
+    
     def initialize_database(self):
         """
         Initialize the database (Neo4j or Chroma fallback).
@@ -616,51 +662,106 @@ class DocumentManager:
     
     def _create_graph_relationships(self, documents: List[Document]):
         """
-        Create relationships between documents and entities in Neo4j graph.
+        Create relationships between documents and entities in Neo4j graph using LLM.
         """
         if not self.graph_driver:
             return
         
-        with self.graph_driver.session() as session:
-            for i, doc in enumerate(documents):
-                # Extract entities and relationships using improved keyword extraction
-                try:
-                    keywords = self._extract_keywords_improved(doc.page_content, language="auto", max_keywords=8)
-                    
-                    # Create document node
-                    session.run(
-                        """
-                        MERGE (d:Document {id: $doc_id})
-                        SET d.content = $content,
-                            d.source = $source,
-                            d.title = $title,
-                            d.chunk_index = $chunk_index
-                        """,
-                        doc_id=f"doc_{i}_{doc.metadata.get('source', 'unknown')}",
-                        content=doc.page_content,
-                        source=doc.metadata.get('source', 'unknown'),
-                        title=os.path.basename(doc.metadata.get('source', 'unknown')),
-                        chunk_index=i
-                    )
-                    
-                    # Create entity nodes and relationships
-                    for keyword, score in keywords[:5]:  # Top 5 keywords
+        # Use LLM-based graph extraction
+        self._create_llm_graph_relationships(documents)
+    
+    def _create_llm_graph_relationships(self, documents: List[Document]):
+        """
+        Create relationships using LLM Graph Transformer - исправленная версия!
+        """
+        try:
+            logger.info(f"🕸️ Создаём граф знаний для {len(documents)} документов с помощью LLM...")
+            
+            # Используем LLM для извлечения графа из каждого документа
+            graph_documents = self.llm_transformer.convert_to_graph_documents(documents)
+            
+            with self.graph_driver.session() as session:
+                for i, (doc, graph_doc) in enumerate(zip(documents, graph_documents)):
+                    try:
+                        # Создаём узел документа
+                        doc_id = f"doc_{i}_{doc.metadata.get('source', 'unknown')}"
                         session.run(
                             """
-                            MERGE (e:Entity {name: $entity})
-                            SET e.type = 'keyword'
-                            WITH e
-                            MATCH (d:Document {id: $doc_id})
-                            MERGE (d)-[r:CONTAINS]->(e)
-                            SET r.score = $score
+                            MERGE (d:Document {id: $doc_id})
+                            SET d.content = $content,
+                                d.source = $source,
+                                d.title = $title,
+                                d.chunk_index = $chunk_index
                             """,
-                            entity=keyword,
-                            doc_id=f"doc_{i}_{doc.metadata.get('source', 'unknown')}",
-                            score=float(score)
+                            doc_id=doc_id,
+                            content=doc.page_content,
+                            source=doc.metadata.get('source', 'unknown'),
+                            title=os.path.basename(doc.metadata.get('source', 'unknown')),
+                            chunk_index=i
                         )
-                except Exception as e:
-                    logger.warning(f"Failed to create relationships for document {i}: {e}")
-
+                        
+                        # Создаём узлы сущностей из LLM с правильными лейблами
+                        for node in graph_doc.nodes:
+                            # Нормализуем лейбл для Neo4j (убираем пробелы и спец. символы)
+                            node_label = self._normalize_neo4j_label(node.type) if node.type else "Entity"
+                            
+                            session.run(
+                                f"""
+                                MERGE (e:{node_label} {{id: $entity_id}})
+                                SET e.name = $entity_name,
+                                    e.type = $entity_type
+                                """,
+                                entity_id=node.id,
+                                entity_name=node.id,
+                                entity_type=node.type
+                            )
+                        
+                        # Создаём связи между сущностями из LLM с правильными типами  
+                        for rel in graph_doc.relationships:
+                            # Нормализуем лейблы узлов
+                            source_label = self._normalize_neo4j_label(rel.source.type) if rel.source.type else "Entity"
+                            target_label = self._normalize_neo4j_label(rel.target.type) if rel.target.type else "Entity"
+                            
+                            # Нормализуем тип связи
+                            relation_type = self._normalize_neo4j_label(rel.type)
+                            
+                            session.run(
+                                f"""
+                                MATCH (a:{source_label} {{id: $source_id}})
+                                MATCH (b:{target_label} {{id: $target_id}})
+                                MERGE (a)-[r:{relation_type}]->(b)
+                                SET r.confidence = 1.0,
+                                    r.extracted_by = 'LLM'
+                                """,
+                                source_id=rel.source.id,
+                                target_id=rel.target.id
+                            )
+                        
+                        # Создаём связи от документа к сущностям
+                        for node in graph_doc.nodes:
+                            node_label = self._normalize_neo4j_label(node.type) if node.type else "Entity"
+                            
+                            session.run(
+                                f"""
+                                MATCH (d:Document {{id: $doc_id}})
+                                MATCH (e:{node_label} {{id: $entity_id}})
+                                MERGE (d)-[r:MENTIONS]->(e)
+                                SET r.extracted_by = 'LLM'
+                                """,
+                                doc_id=doc_id,
+                                entity_id=node.id
+                            )
+                        
+                        logger.info(f"✅ Документ {i+1}: {len(graph_doc.nodes)} узлов, {len(graph_doc.relationships)} связей")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обработки документа {i}: {e}")
+            
+            logger.info("🎉 LLM граф знаний создан успешно!")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания LLM графа: {e}")
+    
     
     def update_documents(self, fixed_documents: List[Document], ids: List[str]) -> tuple[bool, str]:
         """
