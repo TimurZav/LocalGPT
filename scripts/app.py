@@ -412,6 +412,7 @@ class DocumentManager:
         # Initialize LLM for graph construction
         self.llm = None
         self.llm_transformer = None
+        self.cypher_llm = None
         self._initialize_llm_transformer()
 
     def load_log_file(self, file_path: str) -> None:
@@ -474,6 +475,7 @@ class DocumentManager:
         try:
             self.llm = ChatOpenAI(temperature=0)
             self.llm_transformer = LLMGraphTransformer(llm=self.llm)
+            self.cypher_llm = ChatOpenAI(model_name="gpt-4", temperature=0)
             logger.info("LLM Graph Transformer initialized successfully")
         except Exception as e:
             logger.warning(f"Failed to initialize LLM Graph Transformer: {e}")
@@ -834,17 +836,19 @@ class DocumentManager:
             return ""
         
         try:            
-            # Создаём GraphCypherQAChain для интеллектуального поиска
-            chain = GraphCypherQAChain.from_llm(
-                llm=self.llm, 
+            # Создаём GraphCypherQAChain
+            cypher_qa = GraphCypherQAChain.from_llm(
                 graph=self.neo4j_graph, 
+                llm=self.llm,
+                cypher_llm=self.cypher_llm,
+                allow_dangerous_requests=True,
                 verbose=True,
-                allow_dangerous_requests=True
+                return_direct=True
             )
             
             # Запрашиваем контекст из графа знаний
             logger.info(f"🔍 Поиск в графе знаний: {query}")
-            result = chain.run(query)
+            result = cypher_qa.run(query)
             
             logger.info(f"📊 Найден контекст из графа: {len(result)} символов")
             return f"Graph Context: {result}"
