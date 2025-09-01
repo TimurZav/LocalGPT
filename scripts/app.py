@@ -1,3 +1,4 @@
+import re
 import uuid
 import glob
 import os.path
@@ -14,6 +15,7 @@ from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
 from tinydb.queries import QueryLike
+from openrouter import ChatOpenRouter
 from langchain_openai import ChatOpenAI
 from datetime import datetime, timedelta
 from claude_code_llm import ClaudeCodeLLM
@@ -473,7 +475,7 @@ class DocumentManager:
         Initialize LLM transformer for knowledge graph construction
         """
         try:
-            self.llm = ChatOpenAI(temperature=0)
+            self.llm = ChatOpenAI(model_name="gpt-4", temperature=0)
             self.llm_transformer = LLMGraphTransformer(llm=self.llm)
             self.cypher_llm = ChatOpenAI(model_name="gpt-4", temperature=0)
             logger.info("LLM Graph Transformer initialized successfully")
@@ -560,83 +562,7 @@ class DocumentManager:
             
             # Используем LLM для извлечения графа из каждого документа
             graph_documents = self.llm_transformer.convert_to_graph_documents(documents)
-            
-            with self.graph_driver.session() as session:
-                for i, (doc, graph_doc) in enumerate(zip(documents, graph_documents)):
-                    try:
-                        # Создаём узел документа
-                        doc_id = f"doc_{i}_{doc.metadata.get('source', 'unknown')}"
-                        session.run(
-                            """
-                            MERGE (d:Document {id: $doc_id})
-                            SET d.content = $content,
-                                d.source = $source,
-                                d.title = $title,
-                                d.chunk_index = $chunk_index
-                            """,
-                            doc_id=doc_id,
-                            content=doc.page_content,
-                            source=doc.metadata.get('source', 'unknown'),
-                            title=os.path.basename(doc.metadata.get('source', 'unknown')),
-                            chunk_index=i
-                        )
-                        
-                        # Создаём узлы сущностей из LLM с правильными лейблами
-                        for node in graph_doc.nodes:
-                            # Нормализуем лейбл для Neo4j (убираем пробелы и спец. символы)
-                            node_label = self._normalize_neo4j_label(node.type) if node.type else "Entity"
-                            
-                            session.run(
-                                f"""
-                                MERGE (e:{node_label} {{id: $entity_id}})
-                                SET e.name = $entity_name,
-                                    e.type = $entity_type
-                                """,
-                                entity_id=node.id,
-                                entity_name=node.id,
-                                entity_type=node.type
-                            )
-                        
-                        # Создаём связи между сущностями из LLM с правильными типами  
-                        for rel in graph_doc.relationships:
-                            # Нормализуем лейблы узлов
-                            source_label = self._normalize_neo4j_label(rel.source.type) if rel.source.type else "Entity"
-                            target_label = self._normalize_neo4j_label(rel.target.type) if rel.target.type else "Entity"
-                            
-                            # Нормализуем тип связи
-                            relation_type = self._normalize_neo4j_label(rel.type)
-                            
-                            session.run(
-                                f"""
-                                MATCH (a:{source_label} {{id: $source_id}})
-                                MATCH (b:{target_label} {{id: $target_id}})
-                                MERGE (a)-[r:{relation_type}]->(b)
-                                SET r.confidence = 1.0,
-                                    r.extracted_by = 'LLM'
-                                """,
-                                source_id=rel.source.id,
-                                target_id=rel.target.id
-                            )
-                        
-                        # Создаём связи от документа к сущностям
-                        for node in graph_doc.nodes:
-                            node_label = self._normalize_neo4j_label(node.type) if node.type else "Entity"
-                            
-                            session.run(
-                                f"""
-                                MATCH (d:Document {{id: $doc_id}})
-                                MATCH (e:{node_label} {{id: $entity_id}})
-                                MERGE (d)-[r:MENTIONS]->(e)
-                                SET r.extracted_by = 'LLM'
-                                """,
-                                doc_id=doc_id,
-                                entity_id=node.id
-                            )
-                        
-                        logger.info(f"✅ Документ {i+1}: {len(graph_doc.nodes)} узлов, {len(graph_doc.relationships)} связей")
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка обработки документа {i}: {e}")
+            self.neo4j_graph.add_graph_documents(graph_documents, include_source=True)
             
             logger.info("🎉 LLM граф знаний создан успешно!")
             
@@ -644,7 +570,7 @@ class DocumentManager:
             logger.error(f"❌ Ошибка создания LLM графа: {e}")
     
     
-    def update_documents(self, fixed_documents: List[Document], ids: List[str]) -> tuple[bool, str]:
+    def update_documents(self, fixed_documents: List[Document]) -> tuple[bool, str]:
         """
         Updates existing documents in the database (Neo4j or Chroma fallback).
         """
@@ -657,9 +583,6 @@ class DocumentManager:
             if same_files := new_files & existing_docs:
                 gr.Warning("Файлы " + ", ".join(same_files) + " повторяются, поэтому они будут обновлены")
                 self._delete_documents_by_names(list(same_files))
-            
-            # Add documents to Neo4j vector store
-            self.neo4j_vector.add_documents(fixed_documents, ids=ids)
             
             # Create graph relationships
             self._create_llm_graph_relationships(fixed_documents)
@@ -706,21 +629,15 @@ class DocumentManager:
             )
             documents = text_splitter.split_documents(load_documents)
             fixed_documents = self._filter_valid_documents(documents)
-
-            ids: List[str] = [
-                f"{os.path.basename(doc.metadata['source']).replace('.txt', '')}{i}"
-                for i, doc in enumerate(fixed_documents)
-            ]
             
             # Try to update using Neo4j or Chroma
-            is_updated, file_warning = self.update_documents(fixed_documents, ids)
+            is_updated, file_warning = self.update_documents(fixed_documents)
             if is_updated:
                 return file_warning
             
             # Fallback: create new collection
             if self.neo4j_vector:
                 # Neo4j approach
-                self.neo4j_vector.add_documents(fixed_documents, ids=ids)
                 self._create_llm_graph_relationships(fixed_documents)
                 file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
             
@@ -796,65 +713,129 @@ class DocumentManager:
         last_user_message = history[-1].get("content")
         
         try:
-            # Use get_rag_context to get documents
-            docs = self.neo4j_vector.similarity_search_with_score(last_user_message, k=k_documents)
-            if docs:
-                scores: list = []
-                data = defaultdict(str)
-                
-                # Get additional context from graph relationships
-                graph_context = self._get_graph_context(last_user_message)
+            # Get Cypher query and graph context
+            graph_context, cypher_query = self._get_graph_context(last_user_message)
+            
+            # Use documents with custom retrieval query if we have a cypher query
+            if cypher_query:
+                docs = self._search_with_custom_cypher(last_user_message, k_documents, cypher_query)
+            
+            if not docs:
+                docs = self._search_with_custom_cypher(last_user_message, k_documents, cypher_query='')
+            
+            scores: list = []
+            data = defaultdict(str)
 
-                for doc, score in docs:
-                    source = doc.metadata.get("source", "")
-                    url = f'<a href="file/{source}" target="_blank" rel="noopener noreferrer">{os.path.basename(source)}</a>'
-                    
-                    document: str = f"Document - {url} ↓"
-                    score_rounded: float = round(score, 2)
-                    scores.append(score_rounded)
-                    data[document] += f"\n\nScore: {score_rounded}, Text: {doc.page_content}"
+            for doc, score in docs:
+                source = doc.metadata.get("source", "")
+                url = f'<a href="file/{source}" target="_blank" rel="noopener noreferrer">{os.path.basename(source)}</a>'
                 
-                # Add graph context if available
-                if graph_context:
-                    data["Graph Relations ↓"] += f"\n\n{graph_context}"
+                document: str = f"Document - {url} ↓"
+                score_rounded: float = round(score, 2)
+                scores.append(score_rounded)
+                data[document] += f"\n\nScore: {score_rounded}, Text: {doc.page_content}"
+            
+            # Add graph context if available
+            if not cypher_query:
+                data["Graph Relations ↓"] += f"\n\n{graph_context}"
 
-                list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
-                logger.info(f"Retrieved {len(docs)} GraphRAG documents for UI display [uid - {uid}]")
-                
-                return "\n\n\n".join(list_data), scores
-            else:
-                return "No relevant documents found in Neo4j GraphRAG", []
+            list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
+            logger.info(f"Retrieved {len(docs)} GraphRAG documents for UI display [uid - {uid}]")
+            
+            return "\n\n\n".join(list_data), scores
         except Exception as e:
             logger.error(f"Error retrieving documents for UI: {e}")
             return f"Ошибка при поиске документов: {str(e)}", []
     
-    def _get_graph_context(self, query: str) -> str:
+    def _get_graph_context(self, query: str) -> Tuple[str, str]:
         """
         Get additional context from Neo4j graph using GraphCypherQAChain.
+        Returns tuple of (context, cypher_query)
         """
         if not self.neo4j_graph or not self.llm:
-            return ""
+            return "", ""
         
-        try:            
-            # Создаём GraphCypherQAChain
+        try:
+            # Создаём GraphCypherQAChain с return_intermediate_steps=True
             cypher_qa = GraphCypherQAChain.from_llm(
                 graph=self.neo4j_graph, 
                 llm=self.llm,
                 cypher_llm=self.cypher_llm,
                 allow_dangerous_requests=True,
                 verbose=True,
-                return_direct=True
+                return_direct=True,
+                return_intermediate_steps=True
             )
             
             # Запрашиваем контекст из графа знаний
             logger.info(f"🔍 Поиск в графе знаний: {query}")
-            result = cypher_qa.run(query)
+            result = cypher_qa(query)
             
-            logger.info(f"📊 Найден контекст из графа: {len(result)} символов")
-            return f"Graph Context: {result}"
+            # Теперь result содержит и промежуточные шаги
+            cypher_query = result.get("intermediate_steps", [{}])[-1].get("query")
+            answer = result.get("result", "")
+            
+            logger.info(f"🔍 Сгенерированный Cypher запрос: {cypher_query}")
+            logger.info(f"📊 Найден контекст из графа: {len(answer)} символов")
+
+            return answer, cypher_query
             
         except Exception as e:
             logger.error(f"❌ Ошибка GraphCypherQAChain: {e}")
+            return "", ""
+
+    def _extract_relationships_from_cypher(self, cypher_query: str) -> list:
+        """
+        Извлекает отношения из Cypher запроса.
+        Например, из "MATCH (e)-[:USED_TO_CLEAN]->(o), (e)-[:HAS_STRENGTH_CATEGORY]->(p)" 
+        извлекает ["USED_TO_CLEAN", "HAS_STRENGTH_CATEGORY"]
+        """
+        if not cypher_query:
+            return []
+        
+        # Ищем паттерн [:RELATIONSHIP_NAME]
+        pattern = r'\[:(\w+)\]'
+        relationships = re.findall(pattern, cypher_query)
+        
+        logger.info(f"🔍 Извлеченные отношения: {relationships}")
+        return relationships
+
+    def _build_retrieval_query_with_relationships(self, relationships: list) -> str:
+        """
+        Создает retrieval_query на основе извлеченных отношений.
+        """
+        if not relationships:
+            return ""
+        
+        relationship = relationships[0]
+        return f"""
+  WITH node AS doc, score as similarity
+  RETURN doc.content as text, similarity as score,
+    {{source: doc.source}} AS metadata
+"""
+
+    def _search_with_custom_cypher(self, query: str, k: int, cypher_query: str):
+        """
+        Perform document search using a custom Cypher query combined with vector similarity.
+        """
+        try:
+            # Извлекаем отношения из сгенерированного cypher_query
+            relationships = self._extract_relationships_from_cypher(cypher_query)
+            
+            # Создаем retrieval_query на основе извлеченных отношений
+            retrieval_query = self._build_retrieval_query_with_relationships(relationships)
+            
+            logger.info(f"🔍 Построен retrieval_query с отношениями: {relationships}")
+            
+            self.neo4j_vector.retrieval_query = retrieval_query
+            docs = self.neo4j_vector.similarity_search_with_score(query, k=k)
+            logger.info(f"🔍 Custom search returned {len(docs)} documents")
+            
+            return docs
+            
+        except Exception as e:
+            logger.error(f"❌ Error in custom Cypher search: {e}")
+            return []
 
     def list_ingested_documents(self):
         """
