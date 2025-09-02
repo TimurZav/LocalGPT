@@ -395,8 +395,19 @@ class DocumentManager:
         
         # Initialize Neo4j connections
         self.neo4j_vector: Optional[Neo4jVector] = None
-        self.neo4j_graph: Optional[Neo4jGraph] = None
-        self.graph_driver = None
+        
+        # Initialize Neo4j Graph for structured queries
+        self.neo4j_graph = Neo4jGraph(
+            url=self.neo4j_url,
+            username=self.neo4j_username,
+            password=self.neo4j_password
+        )
+        
+        # Initialize Graph Database driver
+        self.graph_driver = GraphDatabase.driver(
+            self.neo4j_url,
+            auth=(self.neo4j_username, self.neo4j_password)
+        )
         
         # Other components
         self.segmenter: Segmenter = Segmenter()
@@ -408,14 +419,10 @@ class DocumentManager:
         self.csv_logs_data: pd.DataFrame = pd.DataFrame()  # CSV logs data
         self.data_path: str = "/home/timur/PycharmWork/LocalGPT/data2"  # Path to data folder
         
-        # Initialize Neo4j components
-        self._initialize_neo4j()
-        
         # Initialize LLM for graph construction
-        self.llm = None
-        self.llm_transformer = None
-        self.cypher_llm = None
-        self._initialize_llm_transformer()
+        self.llm = ChatOpenAI(model_name="gpt-4", temperature=0)
+        self.llm_transformer = LLMGraphTransformer(llm=self.llm)
+        self.cypher_llm = ChatOpenAI(model_name="gpt-4", temperature=0)
 
     def load_log_file(self, file_path: str) -> None:
         """
@@ -435,54 +442,6 @@ class DocumentManager:
             logger.error(f"Error loading log file {file_path}: {e}")
             self.log_entries = []
 
-    def _initialize_neo4j(self):
-        """
-        Initialize Neo4j connections and components for GraphRAG.
-        """
-        # Initialize Graph Database driver
-        self.graph_driver = GraphDatabase.driver(
-            self.neo4j_url,
-            auth=(self.neo4j_username, self.neo4j_password)
-        )
-        
-        # Initialize Neo4j Graph for structured queries
-        self.neo4j_graph = Neo4jGraph(
-            url=self.neo4j_url,
-            username=self.neo4j_username,
-            password=self.neo4j_password
-        )
-        
-        # Initialize Neo4j Vector Store for embeddings with safer approach
-        self.neo4j_vector = Neo4jVector.from_existing_graph(
-            embedding=self.embeddings,
-            search_type="hybrid",
-            url=self.neo4j_url,
-            username=self.neo4j_username,
-            password=self.neo4j_password,
-            index_name="document_embeddings",
-            node_label="Document",
-            text_node_properties=["content", "title"],
-            embedding_node_property="embedding"
-        )
-        
-        if self.neo4j_vector:
-            logger.info("Neo4j GraphRAG initialized successfully")
-        else:
-            logger.warning("Neo4j Vector Store not available, will use graph-only approach")
-    
-    def _initialize_llm_transformer(self):
-        """
-        Initialize LLM transformer for knowledge graph construction
-        """
-        try:
-            self.llm = ChatOpenAI(model_name="gpt-4", temperature=0)
-            self.llm_transformer = LLMGraphTransformer(llm=self.llm)
-            self.cypher_llm = ChatOpenAI(model_name="gpt-4", temperature=0)
-            logger.info("LLM Graph Transformer initialized successfully")
-        except Exception as e:
-            logger.warning(f"Failed to initialize LLM Graph Transformer: {e}")
-            logger.info("Will fall back to keyword-based graph construction")
-    
     def _normalize_neo4j_label(self, label: str) -> str:
         """
         Нормализация лейбла для Neo4j (убирает пробелы и спец. символы)
@@ -553,9 +512,9 @@ class DocumentManager:
         page_content = "\n".join(lines).strip()
         return "" if len(page_content) < 10 else page_content
     
-    def _create_llm_graph_relationships(self, documents: List[Document]):
+    def _create_llm_graph_relationships(self, documents: List[Document], ids: List[str]):
         """
-        Create relationships using LLM Graph Transformer - исправленная версия!
+        Create relationships using LLM Graph Transformer и добавляем эмбеддинги для чанков!
         """
         try:
             logger.info(f"🕸️ Создаём граф знаний для {len(documents)} документов с помощью LLM...")
@@ -566,11 +525,29 @@ class DocumentManager:
             
             logger.info("🎉 LLM граф знаний создан успешно!")
             
+            # Создаём векторный индекс с эмбеддингами для тех же документов
+            logger.info(f"🔗 Создаём векторные эмбеддинги для {len(documents)} чанков...")
+            
+            # Создаём Neo4jVector с эмбеддингами
+            self.neo4j_vector = Neo4jVector.from_existing_graph(
+                embedding=self.embeddings,
+                node_label="Document",
+                embedding_node_property="embedding",
+                text_node_properties=["text"],
+                url=self.neo4j_url,
+                username=self.neo4j_username,
+                password=self.neo4j_password,
+                index_name="vector",
+                search_type="hybrid"
+            )
+            
+            logger.info("🎯 Векторные эмбеддинги созданы и связаны с графом!")
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка создания LLM графа: {e}")
+            logger.error(f"❌ Ошибка создания LLM графа или эмбеддингов: {e}")
     
     
-    def update_documents(self, fixed_documents: List[Document]) -> tuple[bool, str]:
+    def update_documents(self, fixed_documents: List[Document], ids: List[str]) -> tuple[bool, str]:
         """
         Updates existing documents in the database (Neo4j or Chroma fallback).
         """
@@ -585,7 +562,7 @@ class DocumentManager:
                 self._delete_documents_by_names(list(same_files))
             
             # Create graph relationships
-            self._create_llm_graph_relationships(fixed_documents)
+            self._create_llm_graph_relationships(fixed_documents, ids)
             
             file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
             return True, file_warning
@@ -630,15 +607,20 @@ class DocumentManager:
             documents = text_splitter.split_documents(load_documents)
             fixed_documents = self._filter_valid_documents(documents)
             
+            ids: List[str] = [
+                f"{os.path.basename(doc.metadata['source']).replace('.txt', '')}{i}"
+                for i, doc in enumerate(fixed_documents)
+            ]
+            
             # Try to update using Neo4j or Chroma
-            is_updated, file_warning = self.update_documents(fixed_documents)
+            is_updated, file_warning = self.update_documents(fixed_documents, ids)
             if is_updated:
                 return file_warning
             
             # Fallback: create new collection
-            if self.neo4j_vector:
+            if self.neo4j_graph:
                 # Neo4j approach
-                self._create_llm_graph_relationships(fixed_documents)
+                self._create_llm_graph_relationships(fixed_documents, ids)
                 file_warning = f"Загружено {len(fixed_documents)} фрагментов в Neo4j GraphRAG! Можно задавать вопросы."
             
             else:
@@ -711,6 +693,7 @@ class DocumentManager:
             return "Появятся после задавания вопросов", []
 
         last_user_message = history[-1].get("content")
+        docs = []
         
         try:
             # Get Cypher query and graph context
@@ -756,6 +739,16 @@ class DocumentManager:
             return "", ""
         
         try:
+            self.neo4j_vector = Neo4jVector.from_existing_index(
+                embedding=self.embeddings,
+                graph=self.neo4j_graph,
+                url=self.neo4j_url,
+                username=self.neo4j_username,
+                password=self.neo4j_password,
+                index_name="vector",
+                search_type="hybrid",
+                keyword_index_name="keyword"
+            )
             # Создаём GraphCypherQAChain с return_intermediate_steps=True
             cypher_qa = GraphCypherQAChain.from_llm(
                 graph=self.neo4j_graph, 
@@ -827,7 +820,7 @@ class DocumentManager:
             
             logger.info(f"🔍 Построен retrieval_query с отношениями: {relationships}")
             
-            self.neo4j_vector.retrieval_query = retrieval_query
+            # self.neo4j_vector.retrieval_query = retrieval_query
             docs = self.neo4j_vector.similarity_search_with_score(query, k=k)
             logger.info(f"🔍 Custom search returned {len(docs)} documents")
             
@@ -846,7 +839,7 @@ class DocumentManager:
         try:
             files = set()
             
-            if self.neo4j_vector and self.graph_driver:
+            if self.neo4j_graph and self.graph_driver:
                 # Get files from Neo4j
                 with self.graph_driver.session() as session:
                     result = session.run("MATCH (d:Document) RETURN DISTINCT d.title as title")
@@ -866,7 +859,7 @@ class DocumentManager:
         :return: An update object for the UI element containing the list of remaining ingested documents.
         """
         try:
-            if self.neo4j_vector and self.graph_driver:
+            if self.neo4j_graph and self.graph_driver:
                 # Delete from Neo4j
                 self._delete_documents_by_names(documents)
                 # Also delete from vector store if possible
