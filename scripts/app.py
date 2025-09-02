@@ -400,21 +400,8 @@ class DocumentManager:
             password=self.neo4j_password
         )
         
-        # Initialize Neo4j connections
-        try:
-            self.neo4j_vector = Neo4jVector.from_existing_index(
-                embedding=self.embeddings,
-                graph=self.neo4j_graph,
-                url=self.neo4j_url,
-                username=self.neo4j_username,
-                password=self.neo4j_password,
-                index_name="vector",
-                search_type="hybrid",
-                keyword_index_name="keyword"
-            )
-        except Exception as e:
-            logger.error(f"Error initializing Neo4jVector: {e}")
-            self.neo4j_vector = None
+        # Initialize Neo4j connections - проверяем существующий индекс
+        self._try_initialize_existing_vector_index()
         
         # Initialize Graph Database driver
         self.graph_driver = GraphDatabase.driver(
@@ -435,7 +422,30 @@ class DocumentManager:
         # Initialize LLM for graph construction
         self.llm = ChatOpenAI(model_name="gpt-4", temperature=0)
         self.llm_transformer = LLMGraphTransformer(llm=self.llm)
-        self.cypher_llm = ChatOpenAI(model_name="gpt-4", temperature=0)
+        self.cypher_llm = ChatOpenAI(temperature=0)
+    
+    def _try_initialize_existing_vector_index(self):
+        """
+        Попытка подключиться к существующему векторному индексу при запуске.
+        """
+        try:
+            # Проверяем, есть ли существующий векторный индекс
+            self.neo4j_vector: Optional[Neo4jVector] = Neo4jVector.from_existing_index(
+                embedding=self.embeddings,
+                index_name="vector",
+                url=self.neo4j_url,
+                username=self.neo4j_username,
+                password=self.neo4j_password,
+                node_label="Document",
+                text_node_property="text",
+                embedding_node_property="embedding",
+                search_type="hybrid",
+                keyword_index_name="keyword"
+            )
+            logger.info("✅ Подключились к существующему векторному индексу")
+        except Exception as e:
+            logger.info(f"ℹ️ Существующий векторный индекс не найден (это нормально при первом запуске): {e}")
+            self.neo4j_vector = None
 
     def load_log_file(self, file_path: str) -> None:
         """
@@ -798,17 +808,25 @@ class DocumentManager:
 
     def _build_retrieval_query_with_relationships(self, relationships: list) -> str:
         """
-        Создает retrieval_query на основе извлеченных отношений.
+        Создает retrieval_query на основе извлеченных отношений для поиска связанных узлов.
         """
         if not relationships:
-            return ""
+            return "RETURN node.text as text, score, node AS metadata"
         
         relationship = relationships[0]
         return f"""
-  WITH node AS doc, score as similarity
-  RETURN doc.content as text, similarity as score,
-    {{source: doc.source}} AS metadata
-"""
+        WITH node AS doc, score
+        OPTIONAL MATCH (doc)-[:{relationship}]->(related)
+        WITH doc, score, collect(related.text)[0..2] as related_texts
+        RETURN doc.text + 
+               CASE WHEN size(related_texts) > 0 
+                    THEN '\\n\\nСвязанные узлы через {relationship}: ' + 
+                         reduce(s='', text IN related_texts | s + text + '; ')
+                    ELSE '' 
+               END as text, 
+               score, 
+               doc AS metadata
+        """
 
     def _search_with_custom_cypher(self, query: str, k: int, cypher_query: str):
         """
@@ -823,7 +841,10 @@ class DocumentManager:
             
             logger.info(f"🔍 Построен retrieval_query с отношениями: {relationships}")
             
-            # self.neo4j_vector.retrieval_query = retrieval_query
+            # Устанавливаем кастомный retrieval_query для поиска связанных узлов
+            if retrieval_query:
+                self.neo4j_vector.retrieval_query = retrieval_query
+            
             docs = self.neo4j_vector.similarity_search_with_score(query, k=k)
             logger.info(f"🔍 Custom search returned {len(docs)} documents")
             
