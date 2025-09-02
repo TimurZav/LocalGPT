@@ -393,15 +393,28 @@ class DocumentManager:
         self.neo4j_username = "neo4j"
         self.neo4j_password = "localgpt123"
         
-        # Initialize Neo4j connections
-        self.neo4j_vector: Optional[Neo4jVector] = None
-        
         # Initialize Neo4j Graph for structured queries
         self.neo4j_graph = Neo4jGraph(
             url=self.neo4j_url,
             username=self.neo4j_username,
             password=self.neo4j_password
         )
+        
+        # Initialize Neo4j connections
+        try:
+            self.neo4j_vector = Neo4jVector.from_existing_index(
+                embedding=self.embeddings,
+                graph=self.neo4j_graph,
+                url=self.neo4j_url,
+                username=self.neo4j_username,
+                password=self.neo4j_password,
+                index_name="vector",
+                search_type="hybrid",
+                keyword_index_name="keyword"
+            )
+        except Exception as e:
+            logger.error(f"Error initializing Neo4jVector: {e}")
+            self.neo4j_vector = None
         
         # Initialize Graph Database driver
         self.graph_driver = GraphDatabase.driver(
@@ -739,16 +752,6 @@ class DocumentManager:
             return "", ""
         
         try:
-            self.neo4j_vector = Neo4jVector.from_existing_index(
-                embedding=self.embeddings,
-                graph=self.neo4j_graph,
-                url=self.neo4j_url,
-                username=self.neo4j_username,
-                password=self.neo4j_password,
-                index_name="vector",
-                search_type="hybrid",
-                keyword_index_name="keyword"
-            )
             # Создаём GraphCypherQAChain с return_intermediate_steps=True
             cypher_qa = GraphCypherQAChain.from_llm(
                 graph=self.neo4j_graph, 
