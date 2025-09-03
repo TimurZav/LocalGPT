@@ -656,7 +656,10 @@ class DocumentManager:
         """
         try:            
             # Устанавливаем кастомный retrieval_query для поиска связанных узлов
-            self.neo4j_vector.retrieval_query = RETRIEVAL_QUERY
+            if cypher_query:
+                self.neo4j_vector.retrieval_query = RETRIEVAL_QUERY
+            else:
+                self.neo4j_vector.retrieval_query = ''
             
             docs = self.neo4j_vector.similarity_search_with_score(query, k=k)
             logger.info(f"🔍 Custom search returned {len(docs)} documents")
@@ -1477,7 +1480,7 @@ class UIManager:
                         k_documents = gr.Slider(
                             minimum=1,
                             maximum=12,
-                            value=8,
+                            value=4,
                             step=1,
                             interactive=True,
                             label="Кол-во фрагментов для контекста"
