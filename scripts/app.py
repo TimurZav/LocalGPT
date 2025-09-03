@@ -574,16 +574,17 @@ class DocumentManager:
                 connections_html = ""
                 if deeper_connections:
                     connections_html = "<br><strong>Graph Relations:</strong><br>"
+                    connections_html += "<small>• = связанные узлы (тип связи), ↳ = узлы второго уровня (тип связи)</small><br>"
                     for conn in deeper_connections:
                         level1_node = conn.get("level1_node", {})
                         level1_rel = conn.get("level1_relationship_type", "")
                         level2_connections = conn.get("level2_connections", [])
                         
-                        connections_html += f"• {level1_node.get('id', 'Unknown')} ({level1_rel})<br>"
+                        connections_html += f"• {level1_node.get('id', 'Unknown')} <em>({level1_rel})</em><br>"
                         for l2_conn in level2_connections:
                             l2_node = l2_conn.get("level2_node", {})
                             l2_rel = l2_conn.get("level2_relationship_type", "")
-                            connections_html += f"  ↳ {l2_node.get('id', 'Unknown')} ({l2_rel})<br>"
+                            connections_html += f"  ↳ {l2_node.get('id', 'Unknown')} <em>({l2_rel})</em><br>"
                 
                 document_html = f"""
                 <div style="border: 1px solid #ddd; margin: 10px 0; padding: 10px; border-radius: 5px;">
