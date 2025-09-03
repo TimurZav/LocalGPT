@@ -811,22 +811,29 @@ class DocumentManager:
         Создает retrieval_query на основе извлеченных отношений для поиска связанных узлов.
         """
         if not relationships:
-            return "RETURN node.text as text, score, node AS metadata"
-        
-        relationship = relationships[0]
+            return ""
+
         return f"""
-        WITH node AS doc, score
-        OPTIONAL MATCH (doc)-[:{relationship}]->(related)
-        WITH doc, score, collect(related.text)[0..2] as related_texts
-        RETURN doc.text + 
-               CASE WHEN size(related_texts) > 0 
-                    THEN '\\n\\nСвязанные узлы через {relationship}: ' + 
-                         reduce(s='', text IN related_texts | s + text + '; ')
-                    ELSE '' 
-               END as text, 
-               score, 
-               doc AS metadata
-        """
+OPTIONAL MATCH (node)-[r1]-(connected1)-[r2]-(connected2)
+WITH node, score, type(r1) as rel1_type, connected1, type(r2) as rel2_type, connected2
+ORDER BY connected1.id, rel1_type, connected2.id, rel2_type
+WITH node, score,
+    collect(DISTINCT {{
+        level1_relationship_type: rel1_type,
+        level1_node: connected1 {{.*, labels: labels(connected1)}},
+        level2_relationship_type: rel2_type,
+        level2_node: connected2 {{.*, labels: labels(connected2)}},
+        path: [rel1_type, rel2_type]
+    }}) as deeper_connections
+RETURN node.text AS text, score,
+    node {{
+    .*, 
+    text: node.text, 
+    id: node.id,
+    deeper_connections: deeper_connections,
+    relationship_used: 'MENTIONS'
+    }} AS metadata
+"""
 
     def _search_with_custom_cypher(self, query: str, k: int, cypher_query: str):
         """
