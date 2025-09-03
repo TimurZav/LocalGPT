@@ -726,11 +726,43 @@ class DocumentManager:
             if not docs:
                 docs = self._search_with_custom_cypher(last_user_message, k_documents, cypher_query='')
             
-            # Create a prompt
-            prompt = PromptTemplate.from_template(TEMPLATE)
-            messages = prompt.invoke({"question": last_user_message, "context": docs, "graph_context": graph_context})
+            # Format docs for UI display
+            formatted_docs = []
+            for doc, score in docs:
+                source = doc.metadata.get("source", "")
+                url = f'<a href="file/{source}" target="_blank" rel="noopener noreferrer">{os.path.basename(source)}</a>'
+                
+                # Format deeper connections
+                deeper_connections = doc.metadata.get("deeper_connections", [])
+                connections_html = ""
+                if deeper_connections:
+                    connections_html = "<br><strong>Graph Relations:</strong><br>"
+                    for conn in deeper_connections[:5]:  # Limit to first 5
+                        level1_node = conn.get("level1_node", {})
+                        level1_rel = conn.get("level1_relationship_type", "")
+                        level2_connections = conn.get("level2_connections", [])
+                        
+                        connections_html += f"• {level1_node.get('id', 'Unknown')} ({level1_rel})<br>"
+                        for l2_conn in level2_connections[:3]:  # Limit level2
+                            l2_node = l2_conn.get("level2_node", {})
+                            l2_rel = l2_conn.get("level2_relationship_type", "")
+                            connections_html += f"  ↳ {l2_node.get('id', 'Unknown')} ({l2_rel})<br>"
+                
+                document_html = f"""
+                <div style="border: 1px solid #ddd; margin: 10px 0; padding: 10px; border-radius: 5px;">
+                    <strong>Document:</strong> {url}<br>
+                    <strong>Score:</strong> {round(score, 3)}<br>
+                    <strong>Text:</strong> {doc.page_content}...<br>
+                    {connections_html}
+                </div>
+                """
+                formatted_docs.append(document_html)
             
-            return messages
+            result_html = "".join(formatted_docs)
+            if graph_context:
+                result_html = f"<div><strong>Graph Context:</strong><br>{graph_context}</div>" + result_html
+            
+            return result_html
         except Exception as e:
             logger.error(f"Error retrieving documents for UI: {e}")
             return f"Ошибка при поиске документов: {str(e)}", []
