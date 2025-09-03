@@ -815,23 +815,21 @@ class DocumentManager:
 
         return f"""
 OPTIONAL MATCH (node)-[r1]-(connected1)-[r2]-(connected2)
-WITH node, score, type(r1) as rel1_type, connected1, type(r2) as rel2_type, connected2
-ORDER BY connected1.id, rel1_type, connected2.id, rel2_type
 WITH node, score,
     collect(DISTINCT {{
-        level1_relationship_type: rel1_type,
+        level1_relationship_type: type(r1),
         level1_node: connected1 {{.*, labels: labels(connected1)}},
-        level2_relationship_type: rel2_type,
+        level2_relationship_type: type(r2),
+        level2_relationship_properties: properties(r2),
         level2_node: connected2 {{.*, labels: labels(connected2)}},
-        path: [rel1_type, rel2_type]
+        path: [type(r1), type(r2)]
     }}) as deeper_connections
 RETURN node.text AS text, score,
     node {{
     .*, 
-    text: node.text, 
-    id: node.id,
-    deeper_connections: deeper_connections,
-    relationship_used: 'MENTIONS'
+    text: null, 
+    id: null,
+    deeper_connections: deeper_connections
     }} AS metadata
 """
 
