@@ -11,19 +11,14 @@ from gradio_modal import Modal
 from neo4j import GraphDatabase
 from tinydb import TinyDB, where
 from functions.functions import *
-from transformers import pipeline
-from collections import defaultdict
-from tinydb.queries import QueryLike
 from langchain_openai import ChatOpenAI
 from datetime import datetime, timedelta
 from claude_code_llm import ClaudeCodeLLM
 from langchain.docstore.document import Document
-from langchain_core.prompts import PromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from typing import List, Optional, Tuple, AsyncGenerator, cast, Union
+from typing import List, Optional, Tuple, AsyncGenerator, Union
 from langchain_neo4j import Neo4jVector, Neo4jGraph, GraphCypherQAChain
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 from natasha import MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
 
@@ -74,25 +69,8 @@ class SystemPromptManager:
 
 class AnalyticsManager:
     def __init__(self):
-        self.tiny_db: TinyDB = TinyDB(f'{QUESTIONS}/tiny_db.json', indent=4, ensure_ascii=False)
         # Отдельная база для истории диалогов
         self.dialogs_db: TinyDB = TinyDB(f'{QUESTIONS}/dialogs.json', indent=4, ensure_ascii=False)
-
-    def get_analytics(self) -> pd.DataFrame:
-        """
-        Retrieves and returns analytics data from the database as a sorted DataFrame.
-
-        This method fetches all data entries from the `tiny_db` database, converts them into a DataFrame,
-        and sorts the records by the 'Старт обработки запроса' (Request Processing Start) column in
-        descending order if this column is present. If the column is missing, it returns the DataFrame unsorted.
-
-        :return: A DataFrame containing analytics data, optionally sorted by 'Старт обработки запроса'
-        in descending order.
-        """
-        try:
-            return pd.DataFrame(self.tiny_db.all()).sort_values('Старт обработки запроса', ascending=False)
-        except KeyError:
-            return pd.DataFrame(self.tiny_db.all())
 
     def save_dialog_session(self, session_id: str, messages: List[dict], title: str = None) -> None:
         """
@@ -142,147 +120,6 @@ class AnalyticsManager:
         """
         removed = self.dialogs_db.remove(where('session_id') == session_id)
         return len(removed) > 0
-        
-    def update_message_analytics(self, messages: List[dict], analyse=None):
-        """
-        Updates or inserts analytics data for the latest message in the database.
-
-        This function processes the last message in a list of message-answer pairs (`messages`). If the message
-        already exists in the database, it updates the stored answer, increments the repetition count, and
-        optionally adds a rating (`analyse`). If the message is new, it inserts a new record with the current
-        timestamp. Finally, it returns the updated analytics DataFrame.
-
-        :param messages: List of tuples where each tuple is a (message, answer) pair.
-        :param analyse: Optional; rating to assign to the message-answer pair. If not provided, defaults to None.
-        :return: A DataFrame containing the latest analytics data.
-        """
-        message = messages[-2]["content"] if messages else None
-        answer = messages[-1]["content"] if message else None
-        filter_query = cast(QueryLike, where('Сообщения') == message)
-        if result := self.tiny_db.search(filter_query):
-            if analyse is None:
-                self.tiny_db.update({
-                    'Ответы': answer,
-                    'Количество повторений': result[0]['Количество повторений'] + 1,
-                    'Старт обработки запроса': str(datetime.now())
-                }, cond=filter_query)
-            else:
-                self.tiny_db.update({'Оценка ответа': analyse}, cond=filter_query)
-                gr.Info("Отзыв ответу поставлен")
-        elif message is not None:
-            self.tiny_db.insert({
-                'Сообщения': message,
-                'Ответы': answer,
-                'Количество повторений': 1,
-                'Оценка ответа': None,
-                'Старт обработки запроса': str(datetime.now())
-            })
-        return self.get_analytics()
-
-
-class VMManager:
-    def __init__(self):
-        self.server_id: str = "43ba92d7-d3bd-4100-9487-46a3f3ef1db0"
-        self.url: str = f"https://api.immers.cloud:8774/v2.1/servers/{self.server_id}"
-        self.headers: dict = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent":
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-        }
-
-    def authenticate(self) -> str:
-        """
-        Authenticates with the cloud API to obtain an authorization token.
-        :return: Success message with the token if the request is successful.
-            Error message with details if the request fails.
-        """
-        url: str = "https://api.immers.cloud:5000/v3/auth/tokens"
-        payload: dict = {
-            "auth": {
-                "identity": {
-                    "methods": ["password"],
-                    "password": {
-                        "user": {
-                            "name": LOGIN_SERVER,
-                            "password": PASSWORD_SERVER,
-                            "domain": {
-                                "id": "default"
-                            }
-                        }
-                    }
-                },
-                "scope": {
-                    "project": {
-                        "name": LOGIN_SERVER,
-                        "domain": {
-                            "id": "default"
-                        }
-                    }
-                }
-            }
-        }
-        response = requests.post(url, headers=self.headers, json=payload)
-        if response.status_code != 201:
-            return f"Ошибка: {response.status_code}. Детали ответа: {response.text}"
-        os.environ["OS_TOKEN"] = response.headers.get("X-Subject-Token")
-        return f"Авторизация успешна! Токен: {os.environ['OS_TOKEN']}"
-
-    def send_action(self, action: str) -> str:
-        """
-        Sends an action command to the server as a POST request.
-        :param action: The action to perform on the server (e.g., "os-start", "os-stop").
-        :return: Success message if the request is successful.
-            Error message with details if the request fails.
-        """
-        payload = {action: None}
-        response = requests.post(f"{self.url}/action", headers=self.headers, json=payload)
-
-        if response.status_code in {200, 202}:
-            return f"Запрос '{action}' выполнен успешно!"
-        else:
-            return f"Ошибка: {response.status_code}\nДетали: {response.text}"
-
-    def status(self) -> str:
-        """
-        Retrieves the current status of the server.
-        :return: The server's status and last updated date if the request is successful.
-            Error message with details if the request fails.
-        """
-        response = requests.get(self.url, headers=self.headers)
-        if response.status_code not in {200, 202}:
-            return f"Ошибка: {response.status_code}\nДетали: {response.text}"
-        json_data = response.json()['server']
-        return f"Статус: '{json_data['status']}'. Последняя дата обновления: " \
-               f"{datetime.strptime(json_data['updated'], '%Y-%m-%dT%H:%M:%SZ') + timedelta(hours=3)}"
-
-    def control_vm(self, action: str):
-        """
-        Controls the server by invoking the corresponding action or method.
-        :param action: The action to perform.
-        :return: The result of the performed action or an error message for invalid actions.
-        """
-        actions_map: dict = {
-            "Вкл": "os-start",
-            "Выкл": "os-stop",
-            "Перезагрузить": "reboot",
-            "Архивировать": "shelve",
-            "Разархивировать": "unshelve",
-            "Статус": self.status,
-            "Авторизация": self.authenticate
-        }
-
-        if action not in actions_map:
-            return "Неизвестное действие"
-
-        if action == "Авторизация":
-            return actions_map[action]()
-
-        self.headers["X-Auth-Token"] = os.environ['OS_TOKEN']
-        if callable(actions_map[action]):
-            return actions_map[action]()
-
-        return self.send_action(actions_map[action])
 
 
 class AuthManager:
@@ -345,7 +182,7 @@ class AuthManager:
         else:
             is_logged_in = False
 
-        obj_tabs: List[Union[gr.update, None, str]] = [local_data] + [gr.update(visible=is_logged_in) for _ in range(3)]
+        obj_tabs: List[Union[gr.update, None, str]] = [local_data] + [gr.update(visible=is_logged_in) for _ in range(2)]
         if is_logged_in:
             obj_tabs.append(gr.update(value="Выйти", icon=LOGOUT_ICON))
         else:
@@ -373,7 +210,7 @@ class AuthManager:
         data = self.update_user_ui_state(local_data)
         is_logged_in = isinstance(data[0], dict) and data[0].get("access_token")
 
-        obj_tabs = [gr.update(visible=not is_logged_in)] + [gr.update(visible=False) for _ in range(3)]
+        obj_tabs = [gr.update(visible=not is_logged_in)] + [gr.update(visible=False) for _ in range(2)]
         obj_tabs.append(gr.update(value="Войти", icon=LOGIN_ICON if is_logged_in else login_btn))
 
         return obj_tabs
@@ -737,13 +574,13 @@ class DocumentManager:
                 connections_html = ""
                 if deeper_connections:
                     connections_html = "<br><strong>Graph Relations:</strong><br>"
-                    for conn in deeper_connections[:5]:  # Limit to first 5
+                    for conn in deeper_connections:
                         level1_node = conn.get("level1_node", {})
                         level1_rel = conn.get("level1_relationship_type", "")
                         level2_connections = conn.get("level2_connections", [])
                         
                         connections_html += f"• {level1_node.get('id', 'Unknown')} ({level1_rel})<br>"
-                        for l2_conn in level2_connections[:3]:  # Limit level2
+                        for l2_conn in level2_connections:
                             l2_node = l2_conn.get("level2_node", {})
                             l2_rel = l2_conn.get("level2_relationship_type", "")
                             connections_html += f"  ↳ {l2_node.get('id', 'Unknown')} ({l2_rel})<br>"
@@ -760,7 +597,7 @@ class DocumentManager:
             
             result_html = "".join(formatted_docs)
             if graph_context:
-                result_html = f"<div><strong>Graph Context:</strong><br>{graph_context}</div>" + result_html
+                result_html = result_html + f"<br><div><strong>Graph Context:</strong><br>{graph_context}</div>"
             
             return result_html
         except Exception as e:
@@ -1143,93 +980,6 @@ class MessageManager:
         logger.info(f"The question has been processed. UID - [{uid}]")
         return "", history, uid
 
-    @staticmethod
-    def get_recent_history(history: List[dict]) -> List[dict]:
-        """
-        Gets the last 3 message pairs from the history.
-
-        :param history: Full history of the dialog.
-        :return: List with the last message pairs.
-        """
-        pair_count: int = 0
-        temp_history: list = []
-
-        for message in reversed(history[:-1]):  # Exclude the user's last message
-            if message["role"] == "user" and pair_count == 0:
-                continue
-
-            temp_history.append(message)
-
-            if message["role"] == "assistant":
-                pair_count += 1
-
-            if pair_count == 3:
-                break
-
-        return list(reversed(temp_history))
-
-    @staticmethod
-    def prepare_chat_history(history: List[dict]) -> List[BaseMessage]:
-        """
-        Converts the dialog history to the Longchain message format.
-
-        :param history: The history of the dialogue in the form of a dictionary list.
-        ::return: A list of messages in Long Chain format.
-        """
-        langchain_messages = []
-        for message in history:
-            role = message.get("role")
-            content = message.get("content", "")
-
-            if role == "user":
-                if isinstance(content, tuple):
-                    # Processing messages with images
-                    human_message = HumanMessage(
-                        content=[
-                            {"type": "text", "text": langchain_messages[-1].content if langchain_messages else ""},
-                            {"type": "image_url", "image_url": {"url": content[0]}}
-                        ]
-                    )
-                    langchain_messages.append(human_message)
-                else:
-                    langchain_messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                langchain_messages.append(AIMessage(content=content or ""))
-
-        return langchain_messages
-
-    @staticmethod
-    def add_source_references(
-        history: List[dict],
-        scores: List[float],
-        files: List[str],
-        partial_text: str,
-        threshold: float = 0.44
-    ) -> List[dict]:
-        """
-        Appends file source references to the final response text based on score thresholds and
-        updates conversation history.
-        This method adds a list of file references to the response text if files are provided, adjusting based on score
-        threshold conditions. The updated text is appended to the most recent assistant message
-        in the conversation history.
-        :param history: List representing conversation history as pairs of user and assistant messages.
-        :param scores: List of floats representing confidence scores associated with each file, determining if
-                       file sources should be appended.
-        :param files: List of file names or identifiers to include as sources in the response.
-        :param partial_text: The assistant's partial response text to which sources will be appended if files exist.
-        :param threshold: The score threshold to determine whether all sources are appended or only the top source.
-        :return: Updated conversation history with appended source information if conditions are met.
-        """
-        if files:
-            partial_text += SOURCES_SEPARATOR
-            sources_text = [f"{index}. {source}" for index, source in enumerate(files, start=1)]
-            if scores and scores[0] < threshold:
-                partial_text += "\n\n\n".join(sources_text)
-            elif scores:
-                partial_text += sources_text[0]
-            history[-1]["content"] = partial_text
-        return history
-
 
 class ModelManager:
     def __init__(self, message_manager, prompt_manager, analytics_manager, document_manager=None):
@@ -1301,7 +1051,6 @@ class ModelManager:
         yield history
         
         self.message_manager.queue -= 1
-        _ = self.analytics_manager.update_message_analytics(history)
 
     async def _log_based_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str, model: str, use_log_search: bool) -> tuple[str, list]:
         """Use MultiAgentManager for hybrid RAG+Logs approach"""
@@ -1352,7 +1101,6 @@ class UIManager:
         self.analytics_manager: AnalyticsManager = AnalyticsManager()
         self.audio_manager: AudioManager = AudioManager()
         self.document_manager: DocumentManager = DocumentManager()
-        self.vm_manager: VMManager = VMManager()
         self.auth_manager: AuthManager = AuthManager(self.document_manager)
         
         # Initialize ModelManager with document_manager for multi-agent system
@@ -1665,8 +1413,6 @@ class UIManager:
                                 )
 
                         with gr.Row(elem_id="buttons"):
-                            like = gr.Button(value="👍 Понравилось")
-                            dislike = gr.Button(value="👎 Не понравилось")
                             stop_btn = gr.Button(value="🛑 Остановить")
                             clear = gr.Button(value="🗑️ Очистить")
 
@@ -1718,25 +1464,6 @@ class UIManager:
                         delete = gr.Button("🧹 Удалить", variant="primary", elem_classes=["delete-btn"])
 
             with gr.Tab("Настройки", visible=False) as settings_tab:
-                with gr.Column():
-                    with gr.Row():
-                        status_output = gr.Textbox(label="Текущий статус сервера", interactive=False)
-                        action_dropdown = gr.Dropdown(
-                            choices=[
-                                "Статус", "Вкл", "Выкл", "Перезагрузить",
-                                "Архивировать", "Разархивировать", "Авторизация"
-                            ],
-                            value="Выберите действие",
-                            allow_custom_value=True,
-                            label="Выберите операцию с сервером",
-                            interactive=True,
-                        )
-                        action_dropdown.change(
-                            fn=self.vm_manager.control_vm,
-                            inputs=action_dropdown,
-                            outputs=status_output
-                        )
-
                 with gr.Accordion("Параметры", open=False):
                     with gr.Tab(label="Параметры извлечения фрагментов из текста"):
                         k_documents = gr.Slider(
@@ -1785,19 +1512,6 @@ class UIManager:
                             show_label=True
                         )
 
-            with gr.Tab("Логи диалогов", visible=False) as logging_tab:
-                with gr.Row():
-                    with gr.Column():
-                        analytics = gr.DataFrame(
-                            value=self.analytics_manager.get_analytics,  # type: ignore
-                            interactive=False,
-                            show_search="search",
-                            show_row_numbers=True,
-                            show_fullscreen_button=True,
-                            show_copy_button=True,
-                            wrap=True
-                        )
-
             with Modal(visible=False) as modal:
                 with gr.Column(variant="panel"):
                     gr.HTML("<h1><center>Вход</center></h1>")
@@ -1828,7 +1542,6 @@ class UIManager:
                     local_data,
                     documents_tab,
                     settings_tab,
-                    logging_tab,
                     login_btn,
                     modal,
                     message_login,
@@ -1844,7 +1557,7 @@ class UIManager:
             login_btn.click(
                 fn=self.auth_manager.toggle_login_state,
                 inputs=[local_data, login_btn],
-                outputs=[modal, documents_tab, settings_tab, logging_tab, login_btn]
+                outputs=[modal, documents_tab, settings_tab, login_btn]
             ).success(
                 fn=None,
                 inputs=None,
@@ -1971,22 +1684,6 @@ class UIManager:
                 outputs=dialog_radio
             )
 
-            # Like
-            like.click(
-                fn=self.analytics_manager.update_message_analytics,
-                inputs=[chatbot, like],
-                outputs=[analytics],
-                queue=True,
-            )
-
-            # Dislike
-            dislike.click(
-                fn=self.analytics_manager.update_message_analytics,
-                inputs=[chatbot, dislike],
-                outputs=[analytics],
-                queue=True,
-            )
-
             # Clear history
             clear.click(
                 fn=new_dialog_with_update,
@@ -2013,13 +1710,12 @@ class UIManager:
                     local_data,
                     documents_tab,
                     settings_tab,
-                    logging_tab,
                     login_btn,
                     modal,
                     message_login,
                     files_selected
                 ],
-                js=f"{LOCAL_STORAGE}; {JS_CHATGPT_STYLE}();"
+                js=LOCAL_STORAGE
             )
 
         demo.queue(max_size=128, api_open=False, default_concurrency_limit=5)

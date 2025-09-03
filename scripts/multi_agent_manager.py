@@ -2,22 +2,16 @@
 Многоагентная система для обработки гибридных запросов RAG + Logs
 Использует LangGraph для оркестрации агентов
 """
-
 import logging
-from typing import Dict, List, Any, Optional, TypedDict, Annotated
-from dataclasses import dataclass
 from enum import Enum
-
-from langchain_core.messages import HumanMessage
-from langchain_core.prompts import ChatPromptTemplate
+from dataclasses import dataclass
 from claude_code_llm import ClaudeCodeLLM
-# from openrouter import ChatOpenRouter
-# from __init__ import MODELS
-
-# Для LangGraph
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.prompts import ChatPromptTemplate
+from typing import Dict, List, Any, Optional, TypedDict, Annotated
 
 logger = logging.getLogger(__name__)
 

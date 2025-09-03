@@ -77,9 +77,6 @@ LOADER_MAPPING: dict = {
     ".txt": (TextLoader, {"encoding": "utf8"}),
 }
 
-IP_MODEL: str = "http://localhost:11434"
-LOGIN_SERVER: str = "Test"
-PASSWORD_SERVER: str = "Test"
 # Claude Code модели
 CLAUDE_CODE_MODELS = [
     "claude-4-sonnet"
@@ -404,51 +401,6 @@ function toggleUploadButton(model) {
         uploadButton.classList.remove('enable');
     }
     return [model]
-}
-"""
-
-JS_CHATGPT_STYLE: str = """
-function() {
-    console.log('ChatGPT style loading...');
-    
-    // Определяем глобальную функцию selectDialog если она еще не существует
-    if (typeof window.selectDialog === 'undefined') {
-        window.selectDialog = function(sessionId) {
-            console.log('Selecting dialog:', sessionId);
-            
-            // Обновляем визуальное выделение
-            document.querySelectorAll('.dialog-item').forEach(item => {
-                item.classList.remove('selected');
-            });
-            
-            const selected = document.querySelector(`[data-session-id="${sessionId}"]`);
-            if (selected) {
-                selected.classList.add('selected');
-            }
-            
-            // Находим скрытый dropdown и обновляем его
-            const dropdown = document.querySelector('#hidden-dialog-selector select') ||
-                           document.querySelector('#hidden-dialog-selector') ||
-                           Array.from(document.querySelectorAll('select')).find(sel => {
-                               const parent = sel.closest('[id*="hidden-dialog-selector"]');
-                               return parent !== null;
-                           }) ||
-                           Array.from(document.querySelectorAll('select')).find(sel => 
-                               Array.from(sel.options).some(opt => opt.value === sessionId)
-                           );
-            
-            if (dropdown) {
-                dropdown.value = sessionId;
-                const changeEvent = new Event('change', { bubbles: true, cancelable: true });
-                dropdown.dispatchEvent(changeEvent);
-                const inputEvent = new Event('input', { bubbles: true, cancelable: true });
-                dropdown.dispatchEvent(inputEvent);
-            } else {
-                console.error('Dropdown not found for session:', sessionId);
-            }
-        };
-        console.log('selectDialog function defined globally');
-    }
 }
 """
 
