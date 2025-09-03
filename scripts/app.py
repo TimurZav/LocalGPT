@@ -1,4 +1,3 @@
-import re
 import uuid
 import glob
 import os.path
@@ -15,11 +14,11 @@ from functions.functions import *
 from transformers import pipeline
 from collections import defaultdict
 from tinydb.queries import QueryLike
-from openrouter import ChatOpenRouter
 from langchain_openai import ChatOpenAI
 from datetime import datetime, timedelta
 from claude_code_llm import ClaudeCodeLLM
 from langchain.docstore.document import Document
+from langchain_core.prompts import PromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import List, Optional, Tuple, AsyncGenerator, cast, Union
@@ -696,16 +695,14 @@ class DocumentManager:
         self,
         history: List[dict],
         collection_radio: str,
-        k_documents: int,
-        uid: str
-    ) -> Tuple[str, list]:
+        k_documents: int
+    ) -> str:
         """
         UI wrapper for get_rag_context to maintain UI compatibility.
         
         :param history: The conversation history
         :param collection_radio: The selected collection mode
         :param k_documents: The number of documents to retrieve  
-        :param uid: The unique identifier for logging
         :return: Formatted documents and scores for UI display
         """
         if (
@@ -729,26 +726,11 @@ class DocumentManager:
             if not docs:
                 docs = self._search_with_custom_cypher(last_user_message, k_documents, cypher_query='')
             
-            scores: list = []
-            data = defaultdict(str)
-
-            for doc, score in docs:
-                source = doc.metadata.get("source", "")
-                url = f'<a href="file/{source}" target="_blank" rel="noopener noreferrer">{os.path.basename(source)}</a>'
-                
-                document: str = f"Document - {url} ↓"
-                score_rounded: float = round(score, 2)
-                scores.append(score_rounded)
-                data[document] += f"\n\nScore: {score_rounded}, Text: {doc.page_content}"
+            # Create a prompt
+            prompt = PromptTemplate.from_template(TEMPLATE)
+            messages = prompt.invoke({"question": last_user_message, "context": docs, "graph_context": graph_context})
             
-            # Add graph context if available
-            if not cypher_query:
-                data["Graph Relations ↓"] += f"\n\n{graph_context}"
-
-            list_data: list = [f"{doc}\n\n{page_content}" for doc, page_content in data.items()]
-            logger.info(f"Retrieved {len(docs)} GraphRAG documents for UI display [uid - {uid}]")
-            
-            return "\n\n\n".join(list_data), scores
+            return messages
         except Exception as e:
             logger.error(f"Error retrieving documents for UI: {e}")
             return f"Ошибка при поиске документов: {str(e)}", []
@@ -790,68 +772,13 @@ class DocumentManager:
             logger.error(f"❌ Ошибка GraphCypherQAChain: {e}")
             return "", ""
 
-    def _extract_relationships_from_cypher(self, cypher_query: str) -> list:
-        """
-        Извлекает отношения из Cypher запроса.
-        Например, из "MATCH (e)-[:USED_TO_CLEAN]->(o), (e)-[:HAS_STRENGTH_CATEGORY]->(p)" 
-        извлекает ["USED_TO_CLEAN", "HAS_STRENGTH_CATEGORY"]
-        """
-        if not cypher_query:
-            return []
-        
-        # Ищем паттерн [:RELATIONSHIP_NAME]
-        pattern = r'\[:(\w+)\]'
-        relationships = re.findall(pattern, cypher_query)
-        
-        logger.info(f"🔍 Извлеченные отношения: {relationships}")
-        return relationships
-
-    def _build_retrieval_query_with_relationships(self, relationships: list) -> str:
-        """
-        Создает retrieval_query на основе извлеченных отношений для поиска связанных узлов.
-        """
-        if not relationships:
-            return ""
-
-        return f"""
-OPTIONAL MATCH (node)-[r1]-(connected1)-[r2]-(connected2)
-WITH node, score, connected1, type(r1) as rel1_type, 
-     collect({{
-        level2_relationship_type: type(r2),
-        level2_node: connected2 {{.*, labels: labels(connected2)}}
-     }}) as level2_data
-WITH node, score,
-    collect({{
-        level1_node: connected1 {{.*, labels: labels(connected1)}},
-        level1_relationship_type: rel1_type,
-        level2_connections: level2_data
-    }}) as grouped_connections
-RETURN node.text AS text, score,
-    node {{
-    .*, 
-    text: null, 
-    id: null,
-    embedding: null,
-    deeper_connections: grouped_connections
-    }} AS metadata
-"""
-
     def _search_with_custom_cypher(self, query: str, k: int, cypher_query: str):
         """
         Perform document search using a custom Cypher query combined with vector similarity.
         """
-        try:
-            # Извлекаем отношения из сгенерированного cypher_query
-            relationships = self._extract_relationships_from_cypher(cypher_query)
-            
-            # Создаем retrieval_query на основе извлеченных отношений
-            retrieval_query = self._build_retrieval_query_with_relationships(relationships)
-            
-            logger.info(f"🔍 Построен retrieval_query с отношениями: {relationships}")
-            
+        try:            
             # Устанавливаем кастомный retrieval_query для поиска связанных узлов
-            if retrieval_query:
-                self.neo4j_vector.retrieval_query = retrieval_query
+            self.neo4j_vector.retrieval_query = RETRIEVAL_QUERY
             
             docs = self.neo4j_vector.similarity_search_with_score(query, k=k)
             logger.info(f"🔍 Custom search returned {len(docs)} documents")
@@ -1310,7 +1237,6 @@ class ModelManager:
         history: List[dict],
         mode: str,
         retrieved_docs: str,
-        scores: List[float],
         is_use_tools: bool,
         uid: str
     ) -> AsyncGenerator[list[dict], None]:
@@ -1321,7 +1247,6 @@ class ModelManager:
         :param history: List of conversation pairs (user input and bot responses).
         :param mode: Operation mode, which influences the use of context in responses.
         :param retrieved_docs: Relevant documents retrieved to help answer the user query.
-        :param scores: List of scores associated with retrieved documents for source filtering.
         :param is_use_tools: A boolean indicating whether to enable multi-agent system.
         :param uid: Unique identifier for the current user session, useful for logging and tracking.
         :return: Yields updated conversation history after each token generated, and the final response with sources.
@@ -1629,7 +1554,6 @@ class UIManager:
                 )
 
             uid = gr.State(None)
-            scores = gr.State(None)
             local_data = gr.JSON({}, visible=False)
             current_session = gr.State(self.current_session_id)
 
@@ -1823,7 +1747,7 @@ class UIManager:
 
                 with gr.Accordion("Контекст", open=True):
                     with gr.Column(variant="compact"):
-                        retrieved_docs = gr.Markdown(
+                        retrieved_docs = gr.HTML(
                             value="Появятся после задавания вопросов",
                             label="Извлеченные фрагменты",
                             show_label=True
@@ -1998,12 +1922,12 @@ class UIManager:
                 queue=False,
             ).success(
                 fn=self.document_manager.retrieve_documents,
-                inputs=[chatbot, collection_radio, k_documents, uid],
-                outputs=[retrieved_docs, scores],
+                inputs=[chatbot, collection_radio, k_documents],
+                outputs=[retrieved_docs],
                 queue=True,
             ).success(
                 fn=self.model_manager.generate_response_stream,
-                inputs=[model, chatbot, collection_radio, retrieved_docs, scores, is_use_tools, uid],
+                inputs=[model, chatbot, collection_radio, retrieved_docs, is_use_tools, uid],
                 outputs=chatbot,
                 queue=True
             ).success(

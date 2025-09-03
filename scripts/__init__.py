@@ -23,6 +23,41 @@ QUERY_SYSTEM_PROMPT: str = "Вы, помощник по документам - �
 LLM_SYSTEM_PROMPT: str = "Вы, помощник по документам — полезный и честный ассистент. " \
                          "Данные от функций надежны, но могут быть нерелевантны. Анализируйте их в контексте вопроса " \
                          "и дополняйте своим ответом, чтобы он был полным и полезным."
+                         
+TEMPLATE: str = """Use the following pieces of context to answer the question at the end.
+If you don't know the answer, just say that you don't know, don't try to make up an answer.
+
+{context}
+
+{graph_context}
+
+Question: {question}
+
+Answer:"""
+
+RETRIEVAL_QUERY: str = """
+OPTIONAL MATCH (node)-[r1]-(connected1)-[r2]-(connected2)
+WHERE type(r2) <> 'MENTIONS'
+WITH node, score, connected1, type(r1) as rel1_type, 
+     collect({
+        level2_relationship_type: type(r2),
+        level2_node: connected2 {.*, labels: labels(connected2)}
+     }) as level2_data
+WITH node, score,
+    collect({
+        level1_node: connected1 {.*, labels: labels(connected1)},
+        level1_relationship_type: rel1_type,
+        level2_connections: level2_data
+    }) as grouped_connections
+RETURN node.text AS text, score,
+    node {
+    .*, 
+    text: null, 
+    id: null,
+    embedding: null,
+    deeper_connections: grouped_connections
+    } AS metadata
+"""
 
 MODES: list = ["HYBRID"]
 CONTEXT_SIZE = 4000
