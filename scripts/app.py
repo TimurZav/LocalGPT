@@ -1004,7 +1004,6 @@ class ModelManager:
 
         logger.info(f"Response generation completed [uid - {uid}]")
         history.append({"role": "assistant", "content": response_text})
-        yield history
 
         yield self.message_manager.add_source_references(history, scores, files, response_text)
         self.message_manager.queue -= 1
