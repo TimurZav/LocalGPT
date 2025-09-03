@@ -597,7 +597,16 @@ class DocumentManager:
             
             result_html = "".join(formatted_docs)
             if graph_context:
-                result_html = result_html + f"<br><div><strong>Graph Context:</strong><br>{graph_context}</div>"
+                result_html = result_html + f"""<br>
+                <div>
+                    <strong>Graph Cypher Query:</strong>
+                    <br>{cypher_query}</br>
+                </div>
+                <div>
+                    <strong>Graph Context:</strong>
+                    <br>{graph_context}</br>
+                </div>
+                """
             
             return result_html
         except Exception as e:
@@ -1155,7 +1164,6 @@ class UIManager:
             title = dialog['title']
             if len(title) > 40:
                 title = title[:40] + "..."
-            date_str = dialog['updated_at'][:16].replace('T', ' ')
             display_name = f"💬 {title}"
             choices.append((display_name, dialog['session_id']))
         return gr.update(choices=choices)
