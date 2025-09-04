@@ -37,7 +37,7 @@ Answer:"""
 
 RETRIEVAL_QUERY: str = """
 OPTIONAL MATCH (node)-[r1]-(connected1)-[r2]-(connected2)
-WHERE type(r2) <> 'MENTIONS'
+WHERE type(r2) <> 'MENTIONS' AND type(r2) <> 'NEXT_CHUNK'
 WITH node, score, connected1, type(r1) as rel1_type, 
      collect({
         level2_relationship_type: type(r2),

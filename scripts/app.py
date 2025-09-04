@@ -258,7 +258,7 @@ class DocumentManager:
         # Initialize LLM for graph construction
         self.llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
         self.llm_transformer = LLMGraphTransformer(llm=self.llm)
-        self.cypher_llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
+        self.cypher_llm = ChatOpenAI(temperature=0)
     
     def _try_initialize_existing_vector_index(self):
         """
@@ -384,6 +384,35 @@ class DocumentManager:
             
             logger.info("🎉 LLM граф знаний создан успешно!")
             
+            # Добавляем NEXT_CHUNK связи между последовательными чанками
+            logger.info("🔗 Создаём связи NEXT_CHUNK между чанками...")
+            with self.graph_driver.session() as session:
+                for i, (doc, doc_id) in enumerate(zip(documents, ids)):
+                    # Устанавливаем ID для чанка
+                    session.run("""
+                        MATCH (d:Document {text: $text}) 
+                        SET d.chunk_id = $chunk_id,
+                            d.image = $image
+                    """,
+                    text=doc.page_content,
+                    chunk_id=doc_id,
+                    image="📄 " + doc.page_content[:20] + "..."
+                    )
+                    
+                    # Связываем с предыдущим чанком если это не первый
+                    if i > 0:
+                        prev_doc_id = ids[i-1]
+                        session.run(
+                            """
+                                MATCH (prev:Document {chunk_id: $prev_id})
+                                MATCH (curr:Document {chunk_id: $curr_id})
+                                MERGE (prev)-[:NEXT_CHUNK]->(curr)
+                            """, 
+                            prev_id=prev_doc_id, curr_id=doc_id
+                        )
+            
+            logger.info("✅ NEXT_CHUNK связи созданы!")
+            
             # Создаём векторный индекс с эмбеддингами для тех же документов
             logger.info(f"🔗 Создаём векторные эмбеддинги для {len(documents)} чанков...")
             
@@ -505,8 +534,8 @@ class DocumentManager:
         
         try:
             with self.graph_driver.session() as session:
-                result = session.run("MATCH (d:Document) RETURN DISTINCT d.title as title")
-                return {record["title"] for record in result if record["title"]}
+                result = session.run("MATCH (d:Document) RETURN DISTINCT d.source as source")
+                return {record["source"] for record in result if record["source"]}
         except Exception as e:
             logger.error(f"Error getting existing documents: {e}")
             return set()
@@ -522,8 +551,8 @@ class DocumentManager:
             with self.graph_driver.session() as session:
                 for filename in filenames:
                     session.run(
-                        "MATCH (d:Document {title: $title}) DETACH DELETE d",
-                        title=filename
+                        "MATCH (d:Document {source: $source}) DETACH DELETE d",
+                        source=filename
                     )
         except Exception as e:
             logger.error(f"Error deleting documents: {e}")
@@ -683,8 +712,8 @@ class DocumentManager:
             if self.neo4j_graph and self.graph_driver:
                 # Get files from Neo4j
                 with self.graph_driver.session() as session:
-                    result = session.run("MATCH (d:Document) RETURN DISTINCT d.title as title")
-                    files = {record["title"] for record in result if record["title"]}
+                    result = session.run("MATCH (d:Document) RETURN DISTINCT d.source as source")
+                    files = {record["source"] for record in result if record["source"]}
             
             return gr.update(choices=list(files))
             
