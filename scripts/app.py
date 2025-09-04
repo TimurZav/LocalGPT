@@ -393,10 +393,10 @@ class DocumentManager:
                         MATCH (d:Document {text: $text}) 
                         SET d.chunk_id = $chunk_id,
                             d.image = $image
-                    """,
-                    text=doc.page_content,
-                    chunk_id=doc_id,
-                    image="📄 " + doc.page_content[:20] + "..."
+                        """,
+                        text=doc.page_content,
+                        chunk_id=doc_id,
+                        image="📄 " + doc.page_content[:20] + "..."
                     )
                     
                     # Связываем с предыдущим чанком если это не первый
