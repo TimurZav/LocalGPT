@@ -253,7 +253,7 @@ class DocumentManager:
         self.log_file_path: str = ""  # Path to the log file
         self.log_entries: List[str] = []  # Cached log entries
         self.csv_logs_data: pd.DataFrame = pd.DataFrame()  # CSV logs data
-        self.data_path: str = "/home/timur/PycharmWork/LocalGPT/data2"  # Path to data folder
+        self.data_path: str = "/home/timur/PycharmWork/LocalGPT/logs"  # Path to data folder
         
         # Initialize LLM for graph construction
         self.llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
@@ -686,10 +686,7 @@ class DocumentManager:
         """
         try:            
             # Устанавливаем кастомный retrieval_query для поиска связанных узлов
-            if cypher_query:
-                self.neo4j_vector.retrieval_query = RETRIEVAL_QUERY
-            else:
-                self.neo4j_vector.retrieval_query = ''
+            self.neo4j_vector.retrieval_query = RETRIEVAL_QUERY
             
             docs = self.neo4j_vector.similarity_search_with_score(query, k=k)
             logger.info(f"🔍 Custom search returned {len(docs)} documents")
@@ -1480,7 +1477,7 @@ class UIManager:
                             )
                             log_status = gr.Markdown("Лог файл не загружен")
                         
-                        with gr.Tab("CSV Логи из data2"):
+                        with gr.Tab("CSV Логи из logs"):
                             with gr.Row():
                                 user_request_time = gr.DateTime(
                                     label="Время запроса пользователя",
@@ -1644,7 +1641,7 @@ class UIManager:
                 queue=True
             )
 
-            # Load CSV logs from data2
+            # Load CSV logs from logs
             load_csv_logs_btn.click(
                 fn=self.document_manager.load_csv_logs_from_data,
                 inputs=[user_request_time, user_pid],
