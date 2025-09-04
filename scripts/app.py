@@ -256,9 +256,9 @@ class DocumentManager:
         self.data_path: str = "/home/timur/PycharmWork/LocalGPT/data2"  # Path to data folder
         
         # Initialize LLM for graph construction
-        self.llm = ChatOpenAI(model_name="gpt-4", temperature=0)
+        self.llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
         self.llm_transformer = LLMGraphTransformer(llm=self.llm)
-        self.cypher_llm = ChatOpenAI(temperature=0)
+        self.cypher_llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
     
     def _try_initialize_existing_vector_index(self):
         """
