@@ -283,24 +283,6 @@ class DocumentManager:
             logger.info(f"ℹ️ Существующий векторный индекс не найден (это нормально при первом запуске): {e}")
             self.neo4j_vector = None
 
-    def load_log_file(self, file_path: str) -> None:
-        """
-        Loads log entries from a .txt file.
-        
-        :param file_path: Path to the log file
-        """
-        try:
-            self.log_file_path = file_path
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Split by lines and filter out empty lines
-            self.log_entries = [line.strip() for line in content.split('\n') if line.strip()]
-            logger.info(f"Loaded {len(self.log_entries)} log entries from {file_path}")
-        except Exception as e:
-            logger.error(f"Error loading log file {file_path}: {e}")
-            self.log_entries = []
-
     def _normalize_neo4j_label(self, label: str) -> str:
         """
         Нормализация лейбла для Neo4j (убирает пробелы и спец. символы)
@@ -738,23 +720,6 @@ class DocumentManager:
         except Exception as e:
             logger.error(f"Error during document deletion: {e}")
             return gr.update(choices=[])
-    
-    def load_log_file_ui(self, file):
-        """
-        UI handler for loading log files.
-        
-        :param file: Gradio file object
-        :return: Status message
-        """
-        if file is None:
-            return "Файл не выбран"
-        
-        try:
-            self.load_log_file(file.name)
-            return f"✅ Загружено {len(self.log_entries)} записей из {os.path.basename(file.name)}"
-        except Exception as e:
-            logger.error(f"Error loading log file: {e}")
-            return f"❌ Ошибка загрузки файла: {str(e)}"
     
     def load_csv_logs_from_data(self, request_time: str, pid: str) -> str:
         """
@@ -1470,13 +1435,6 @@ class UIManager:
                             )
                             file_warning = gr.Markdown("Фрагменты ещё не загружены!")
                         
-                        with gr.Tab("Логи"):
-                            log_file_upload = gr.File(
-                                label="Загрузить лог файл (.txt)",
-                                file_types=[".txt"]
-                            )
-                            log_status = gr.Markdown("Лог файл не загружен")
-                        
                         with gr.Tab("CSV Логи из logs"):
                             with gr.Row():
                                 user_request_time = gr.DateTime(
@@ -1631,14 +1589,6 @@ class UIManager:
             ).success(
                 fn=self.document_manager.list_ingested_documents,
                 outputs=files_selected
-            )
-
-            # Upload log file
-            log_file_upload.upload(
-                fn=self.document_manager.load_log_file_ui,
-                inputs=[log_file_upload],
-                outputs=[log_status],
-                queue=True
             )
 
             # Load CSV logs from logs
