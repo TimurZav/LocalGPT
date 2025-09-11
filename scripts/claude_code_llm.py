@@ -133,9 +133,23 @@ class ClaudeCodeLLM(LLM):
             # Нет запущенного event loop, можем использовать asyncio.run
             return asyncio.run(self._agenerate(messages, stop, run_manager, **kwargs))
     
-    def invoke(self, messages: List[BaseMessage], **kwargs) -> ClaudeCodeResponse:
-        """Простой интерфейс для вызова (совместимость с OpenRouter)"""
-        prompt, system_prompt = self._convert_messages_to_prompt(messages)
+    def invoke(self, input_data, config=None, **kwargs):
+        """Простой интерфейс для вызова (совместимость с LangChain)"""
+        # Handle different input types
+        if isinstance(input_data, str):
+            # Direct string input
+            prompt = input_data
+            system_prompt = kwargs.get('system_prompt')
+        elif isinstance(input_data, list):
+            # List of BaseMessage objects
+            prompt, system_prompt = self._convert_messages_to_prompt(input_data)
+        elif hasattr(input_data, 'messages'):
+            # Input with messages attribute
+            prompt, system_prompt = self._convert_messages_to_prompt(input_data.messages)
+        else:
+            # Try to convert to string
+            prompt = str(input_data)
+            system_prompt = kwargs.get('system_prompt')
         
         # Используем _call метод с system_prompt
         response_text = self._call(prompt, system_prompt=system_prompt, **kwargs)
