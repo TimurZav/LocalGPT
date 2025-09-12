@@ -83,6 +83,7 @@ jsonpatch==1.33
 jsonpointer==3.0.0
 jsonschema==4.23.0
 jsonschema-specifications==2024.10.1
+jq==1.10.0
 kiwisolver==1.4.7
 kombu==5.4.2
 kubernetes==31.0.0

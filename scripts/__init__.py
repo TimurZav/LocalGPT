@@ -12,6 +12,7 @@ from langchain_community.document_loaders import (
     UnstructuredODTLoader,
     UnstructuredPowerPointLoader,
     UnstructuredWordDocumentLoader,
+    JSONLoader,
 )
 
 FAVICON_PATH: str = 'https://i.ibb.co/3CVGPf7/1681038242chatgpt-logo-png.png'
@@ -75,6 +76,7 @@ LOADER_MAPPING: dict = {
     ".ppt": (UnstructuredPowerPointLoader, {}),
     ".pptx": (UnstructuredPowerPointLoader, {}),
     ".txt": (TextLoader, {"encoding": "utf8"}),
+    ".json": (JSONLoader, {"jq_schema": ".", "text_content": False}),
 }
 
 # Claude Code модели
