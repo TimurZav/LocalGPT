@@ -37,6 +37,7 @@ class GraphState(TypedDict):
     retrieved_docs: str  # Документы, полученные из UI
     query_type: str
     rag_result: Optional[AgentResult]
+    logs_result: Optional[AgentResult]
     final_answer: Optional[str]
     sources: List[str]
     metadata: Dict[str, Any]
@@ -55,18 +56,72 @@ class MultiAgentManager:
         # Промпты (классификатор больше не нужен, всегда используем HYBRID)
         
         self.rag_agent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Ты RAG агент, работающий с документами. Отвечай ИСКЛЮЧИТЕЛЬНО на основе предоставленного контекста из документов.
+            ("system", """Ты GraphRAG агент, работающий с Neo4j графовой базой данных. Создай КРАТКУЮ ВЫЖИМКУ из документов и связей между ними.
 
             Инструкции:
-            1. Используй ТОЛЬКО информацию из предоставленного контекста
-            2. НЕ добавляй информацию из своих знаний, если её нет в контексте
-            3. Если в контексте нет ответа на вопрос, честно скажи об этом
-            4. Укажи источники для каждого факта из контекста
-            5. Структурируй ответ логично и понятно
-            6. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов из истории диалога
+            1. Найди в чанках информацию, которая объясняет события из логов
+            2. Ищи теоретическую информацию о механиках, правилах, ограничениях
+            3. Включи информацию о наградах, героях, механиках игры
+            4. ОСОБОЕ ВНИМАНИЕ: ищи информацию о сохранениях, синхронизации данных, потере прогресса
+            5. Укажи источники для каждого факта
+            6. Если есть результат анализа логов - найди документацию, которая это объясняет
+            7. Формат: краткие пункты с объяснениями и контекстом
+            8. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов из истории диалога
             
-            Цель: предоставить точный ответ, основанный исключительно на документах."""),
-            ("human", "История диалога:\n{dialog_history}\n\nКонтекст из документов:\n{context}\n\nТекущий вопрос: {query}")
+            Цель: дополнить практические данные из логов теоретическими знаниями."""),
+            ("human", "История диалога:\n{dialog_history}\n\nКонтекст из документов и графовых связей:\n{context}\n\nРезультат анализа логов:\n{logs_result}\n\nТекущий вопрос: {query}")
+        ])
+        
+        self.logs_agent_prompt = ChatPromptTemplate.from_messages([
+            ("system", """Ты агент анализа логов. Тебе предоставлены логи системы для анализа.
+            
+            Инструкции:
+            1. Анализируй все предоставленные логи полностью
+            2. Ищи паттерны, ошибки, события, связанные с вопросом пользователя
+            3. Группируй похожие события вместе
+            4. Указывай временные метки для важных событий
+            5. Если в логах нет информации для ответа, так и скажи
+            6. Предоставляй детальный анализ со статистикой, если возможно
+            7. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов из истории диалога
+            
+            Будь максимально полезным и аналитическим."""),
+            ("human", "История диалога:\n{dialog_history}\n\nЛоги системы:\n{logs}\n\nТекущий вопрос для анализа: {query}")
+        ])
+        
+        self.integration_prompt = ChatPromptTemplate.from_messages([
+            ("system", """Ты интеграционный агент. Твоя задача - создать полный и связный ответ, объединив:
+            1. Результат Neo4j GraphRAG поиска по документам (релевантные чанки и графовые связи)
+            2. Результат анализа всех логов системы
+            3. Контекст предыдущего диалога для непрерывности разговора
+
+            Правила интеграции:
+            1. Сначала используй информацию из документов для теоретической части ответа
+            2. Затем дополни практической информацией из логов (события, ошибки, статистика)
+            3. Создай связный нарратив, объединив оба источника
+            4. Если результаты противоречат друг другу, укажи это и объясни различия
+            5. Если один источник не содержит информации, полноценно используй другой
+            6. Всегда указывай, откуда взята информация
+            7. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов для логичности диалога
+            8. Ссылайся на предыдущие ответы, если текущий вопрос связан с ними
+
+            Структура ответа:
+            [Основной интегрированный ответ с использованием обоих источников и контекста диалога]
+            
+            ## Источники данных
+            - Документы: [список файлов, если есть]
+            - Системные логи: [краткая характеристика логов]"""),
+            ("human", """История диалога:
+            {dialog_history}
+
+            Текущий вопрос пользователя: {query}
+
+            Информация из документов (GraphRAG):
+            {rag_result}
+
+            Информация из логов системы:  
+            {logs_result}
+
+            Создай интегрированный ответ, объединив всю информацию и учитывая контекст диалога.""")
         ])
 
 
@@ -77,11 +132,15 @@ class MultiAgentManager:
         # Добавление узлов
         workflow.add_node("classifier", self._classify_query)
         workflow.add_node("rag_agent", self._run_rag_agent)
+        workflow.add_node("logs_agent", self._run_logs_agent)
+        workflow.add_node("integrator", self._integrate_results)
         
         # Определение маршрутов - простая цепочка
         workflow.set_entry_point("classifier")
-        workflow.add_edge("classifier", "rag_agent")
-        workflow.add_edge("rag_agent", END)
+        workflow.add_edge("classifier", "logs_agent")
+        workflow.add_edge("logs_agent", "rag_agent")
+        workflow.add_edge("rag_agent", "integrator")
+        workflow.add_edge("integrator", END)
         
         return workflow.compile(checkpointer=MemorySaver())
 
@@ -154,11 +213,16 @@ class MultiAgentManager:
                     metadata={"context_length": 0}
                 )
             else:
-                # Генерация ответа на основе контекста документов
+                # Получение результата логов, если есть
+                logs_result = state.get("logs_result")
+                logs_content = logs_result.content if logs_result and logs_result.success else "Анализ логов не выполнен"
+                
+                # Генерация ответа на основе контекста документов + результат логов
                 response = self.llm.invoke(
                     self.rag_agent_prompt.format_messages(
                         dialog_history=dialog_history,
                         context=rag_context,
+                        logs_result=logs_content,
                         query=query
                     )
                 )
@@ -172,14 +236,12 @@ class MultiAgentManager:
                 )
             
             state["rag_result"] = rag_result
-            state["final_answer"] = rag_result.content
-            state["sources"] = rag_result.sources
             logger.info(f"RAG агент завершен: success={rag_result.success}")
             return state
             
         except Exception as e:
             logger.error(f"Ошибка RAG агента: {e}")
-            rag_result = AgentResult(
+            state["rag_result"] = AgentResult(
                 agent_type="rag",
                 success=False,
                 content=f"Ошибка обработки документов: {str(e)}",
@@ -187,11 +249,125 @@ class MultiAgentManager:
                 metadata={},
                 error=str(e)
             )
-            state["rag_result"] = rag_result
-            state["final_answer"] = rag_result.content
-            state["sources"] = rag_result.sources
             return state
 
+    def _run_logs_agent(self, state: GraphState) -> GraphState:
+        """Выполнение агента логов"""
+        try:
+            query = state["original_query"]
+            dialog_history = self._format_dialog_history(state.get("dialog_history"))
+            
+            # Получение всех логов
+            if not self.document_manager.log_entries:
+                logs_result = AgentResult(
+                    agent_type="logs",
+                    success=False,
+                    content="Логи не загружены в систему",
+                    sources=[],
+                    metadata={}
+                )
+            else:
+                # Ограничение логов для избежания ошибки "Argument list too long"
+                max_logs_chars = 50000  # Максимальный размер логов в символах
+                max_log_entries = 1000   # Максимальное количество записей логов
+                
+                # Берем последние записи и ограничиваем по размеру
+                log_entries = self.document_manager.log_entries[-max_log_entries:]
+                all_logs = "\n".join(log_entries)
+                
+                # Если логи все еще слишком большие, обрезаем по символам
+                if len(all_logs) > max_logs_chars:
+                    all_logs = all_logs[-max_logs_chars:]
+                    # Убеждаемся, что не обрезали строку посередине
+                    first_newline = all_logs.find('\n')
+                    if first_newline > 0:
+                        all_logs = all_logs[first_newline + 1:]
+                
+                logger.info(f"Обрабатываем {len(log_entries)} записей логов, размер: {len(all_logs)} символов")
+                
+                response = self.llm.invoke(
+                    self.logs_agent_prompt.format_messages(
+                        dialog_history=dialog_history,
+                        logs=all_logs,
+                        query=query
+                    )
+                )
+                
+                logs_result = AgentResult(
+                    agent_type="logs",
+                    success=True,
+                    content=response.content,
+                    sources=["logs"],
+                    metadata={
+                        "total_logs": len(self.document_manager.log_entries)
+                    }
+                )
+            
+            state["logs_result"] = logs_result
+            logger.info(f"Агент логов завершен: success={logs_result.success}, processed {len(self.document_manager.log_entries) if self.document_manager.log_entries else 0} logs")
+            return state
+            
+        except Exception as e:
+            logger.error(f"Ошибка агента логов: {e}")
+            state["logs_result"] = AgentResult(
+                agent_type="logs",
+                success=False,
+                content=f"Ошибка анализа логов: {str(e)}",
+                sources=[],
+                metadata={},
+                error=str(e)
+            )
+            return state
+
+    def _integrate_results(self, state: GraphState) -> GraphState:
+        """Интеграция результатов"""
+        try:
+            query = state["original_query"]
+            dialog_history = self._format_dialog_history(state.get("dialog_history"))
+            rag_result = state.get("rag_result")
+            logs_result = state.get("logs_result")
+            
+            # Подготовка результатов для интеграции
+            rag_content = rag_result.content if rag_result and rag_result.success else "Информация не найдена в документах"
+            logs_content = logs_result.content if logs_result and logs_result.success else "Информация не найдена в логах"
+            
+            # Интеграция результатов
+            response = self.llm.invoke(
+                self.integration_prompt.format_messages(
+                    dialog_history=dialog_history,
+                    query=query,
+                    rag_result=rag_content,
+                    logs_result=logs_content
+                )
+            )
+            
+            # Сбор всех источников
+            all_sources = []
+            if rag_result and rag_result.success:
+                all_sources.extend(rag_result.sources)
+            if logs_result and logs_result.success:
+                all_sources.extend(logs_result.sources)
+            
+            state["final_answer"] = response.content
+            state["sources"] = list(set(all_sources))  # Убираем дубликаты
+            
+            logger.info("Интеграция результатов завершена")
+            return state
+            
+        except Exception as e:
+            logger.error(f"Ошибка интеграции: {e}")
+            # Возвращаем лучший доступный результат
+            if state.get("rag_result") and state["rag_result"].success:
+                state["final_answer"] = state["rag_result"].content
+                state["sources"] = state["rag_result"].sources
+            elif state.get("logs_result") and state["logs_result"].success:
+                state["final_answer"] = state["logs_result"].content
+                state["sources"] = state["logs_result"].sources
+            else:
+                state["final_answer"] = "Не удалось получить информацию из доступных источников"
+                state["sources"] = []
+            
+            return state
 
 
 
@@ -206,6 +382,7 @@ class MultiAgentManager:
                 "retrieved_docs": retrieved_docs,
                 "query_type": "",
                 "rag_result": None,
+                "logs_result": None,
                 "final_answer": None,
                 "sources": [],
                 "metadata": {}
@@ -221,6 +398,7 @@ class MultiAgentManager:
                 "sources": final_state.get("sources", []),
                 "query_type": final_state.get("query_type", "unknown"),
                 "rag_result": final_state.get("rag_result"),
+                "logs_result": final_state.get("logs_result"),
                 "metadata": final_state.get("metadata", {})
             }
             
@@ -231,6 +409,7 @@ class MultiAgentManager:
                 "sources": [],
                 "query_type": "error",
                 "rag_result": None,
+                "logs_result": None,
                 "metadata": {"error": str(e)}
             }
 
@@ -245,6 +424,7 @@ class MultiAgentManager:
                 "retrieved_docs": retrieved_docs,
                 "query_type": "",
                 "rag_result": None,
+                "logs_result": None,
                 "final_answer": None,
                 "sources": [],
                 "metadata": {}
@@ -260,6 +440,7 @@ class MultiAgentManager:
                 "sources": final_state.get("sources", []),
                 "query_type": final_state.get("query_type", "unknown"),
                 "rag_result": final_state.get("rag_result"),
+                "logs_result": final_state.get("logs_result"),
                 "metadata": final_state.get("metadata", {})
             }
             
@@ -270,5 +451,6 @@ class MultiAgentManager:
                 "sources": [],
                 "query_type": "error", 
                 "rag_result": None,
+                "logs_result": None,
                 "metadata": {"error": str(e)}
             }

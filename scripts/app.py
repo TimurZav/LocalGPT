@@ -246,6 +246,11 @@ class DocumentManager:
             auth=(self.neo4j_username, self.neo4j_password)
         )
         
+        # Other components
+        self.log_entries: List[str] = []  # Cached log entries
+        self.csv_logs_data: pd.DataFrame = pd.DataFrame()  # CSV logs data
+        self.data_path: str = "/home/timur/PycharmWork/LocalGPT/logs"  # Path to data folder
+        
         # Initialize LLM for graph construction
         self.llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
         self.llm_transformer = LLMGraphTransformer(llm=self.llm)
@@ -684,7 +689,7 @@ class DocumentManager:
                 # Get files from Neo4j
                 with self.graph_driver.session() as session:
                     result = session.run("MATCH (d:Document) RETURN DISTINCT d.source as source")
-                    files = {record["source"] for record in result if record["source"]}
+                    files = {os.path.basename(record["source"]) for record in result if record["source"]}
             
             return gr.update(choices=list(files))
             
@@ -712,6 +717,270 @@ class DocumentManager:
         except Exception as e:
             logger.error(f"Error during document deletion: {e}")
             return gr.update(choices=[])
+    
+    def load_csv_logs_from_data(self, request_time: str, match_id: str, account_id: str, hero_id: str, player_slot: str) -> str:
+        """
+        Load and filter CSV logs from logs folder based on time range and key fields.
+        
+        :param request_time: User request time in ISO format or empty string
+        :param match_id: Match ID filter or empty string
+        :param account_id: Account ID filter or empty string
+        :param hero_id: Hero ID filter or empty string
+        :param player_slot: Player slot filter or empty string
+        :return: Status message
+        """
+        try:
+            if not os.path.exists(self.data_path):
+                return f"❌ Папка {self.data_path} не найдена"
+            
+            # Find all CSV files in logs folder
+            csv_files = glob.glob(os.path.join(self.data_path, "*.csv"))
+            if not csv_files:
+                return "❌ CSV файлы не найдены в папке logs"
+            
+            # Load and combine all CSV files with different structures
+            all_data = {}
+            total_rows = 0
+            
+            for csv_file in csv_files:
+                try:
+                    df = pd.read_csv(csv_file)
+                    file_name = os.path.basename(csv_file)
+                    all_data[file_name] = df
+                    total_rows += len(df)
+                    logger.info(f"Загружен файл {file_name}: {len(df)} записей")
+                except Exception as e:
+                    logger.warning(f"Не удалось загрузить {csv_file}: {e}")
+                    continue
+            
+            if not all_data:
+                return "❌ Не удалось загрузить ни одного CSV файла"
+            
+            # Apply filters for key fields
+            filter_params = {
+                'match_id': match_id.strip() if match_id and match_id.strip() else None,
+                'account_id': account_id.strip() if account_id and account_id.strip() else None,
+                'hero_id': hero_id.strip() if hero_id and hero_id.strip() else None,
+                'player_slot': player_slot.strip() if player_slot and player_slot.strip() else None
+            }
+            
+            # Remove None values from filter params
+            active_filters = {k: v for k, v in filter_params.items() if v is not None}
+            
+            if active_filters:
+                filtered_data = {}
+                for file_name, df in all_data.items():
+                    temp_df = df.copy()
+                    
+                    # Apply each filter
+                    for field, value in active_filters.items():
+                        if field in df.columns:
+                            try:
+                                # Try to convert value to appropriate type
+                                if df[field].dtype in ['int64', 'float64']:
+                                    filter_value = int(value)
+                                else:
+                                    filter_value = value
+                                
+                                temp_df = temp_df[temp_df[field] == filter_value]
+                                
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"Ошибка фильтрации по {field} в файле {file_name}: {e}")
+                                continue
+                    
+                    if not temp_df.empty:
+                        filtered_data[file_name] = temp_df
+                
+                if not filtered_data:
+                    filter_desc = ", ".join([f"{k}={v}" for k, v in active_filters.items()])
+                    return f"❌ Не найдено записей для фильтров: {filter_desc}"
+                
+                all_data = filtered_data
+                total_rows = sum(len(df) for df in all_data.values())
+            
+            # Filter by time range if request_time is specified
+            if request_time:
+                try:
+                    # Parse request time (Unix timestamp from Gradio)
+                    request_dt = pd.to_datetime(request_time, unit='s', utc=True).tz_convert('Europe/Moscow')
+                    # Calculate 2 days back from request time
+                    two_days_back = request_dt - timedelta(days=2)
+                    
+                    # Remove timezone info for comparison
+                    request_dt = request_dt.tz_localize(None)
+                    two_days_back = two_days_back.tz_localize(None)
+                    
+                    # Convert request_dt to Unix timestamp for comparison with start_time
+                    request_unix = int(request_dt.timestamp())
+                    two_days_back_unix = int(two_days_back.timestamp())
+                    
+                    filtered_data = {}
+                    for file_name, df in all_data.items():
+                        if 'start_time' in df.columns:
+                            try:
+                                # Filter by Unix timestamp
+                                filtered_df = df[
+                                    (df['start_time'] >= two_days_back_unix) & 
+                                    (df['start_time'] <= request_unix)
+                                ]
+                                if not filtered_df.empty:
+                                    filtered_data[file_name] = filtered_df
+                            except Exception as e:
+                                logger.warning(f"Ошибка фильтрации по времени в файле {file_name}: {e}")
+                                continue
+                        else:
+                            # Keep files without start_time column
+                            filtered_data[file_name] = df
+                    
+                    if not filtered_data:
+                        return f"❌ Не найдено записей в диапазоне от {two_days_back} до {request_dt}"
+                    
+                    all_data = filtered_data
+                    total_rows = sum(len(df) for df in all_data.values())
+                    
+                except Exception as e:
+                    return f"❌ Ошибка парсинга времени запроса: {e}"
+            
+            # Store the filtered data
+            self.csv_logs_data = all_data
+            
+            # Convert to log entries format for compatibility with existing system
+            log_entries = []
+            for file_name, df in all_data.items():
+                for _, row in df.iterrows():
+                    # Create a log entry string with key information
+                    log_parts = []
+                    log_parts.append(f"File: {file_name}")
+                    
+                    # Add key identification fields first
+                    key_fields = ['match_id', 'account_id', 'hero_id', 'player_slot']
+                    for field in key_fields:
+                        if field in row.index and pd.notna(row[field]):
+                            log_parts.append(f"{field.upper()}: {row[field]}")
+                    
+                    # Add start_time if present and convert to readable format
+                    if 'start_time' in row.index and pd.notna(row['start_time']):
+                        try:
+                            timestamp = pd.to_datetime(row['start_time'], unit='s')
+                            log_parts.append(f"Start_Time: {timestamp}")
+                        except:
+                            log_parts.append(f"Start_Time: {row['start_time']}")
+                    
+                    # Add other important columns based on file type
+                    important_cols = ['duration', 'radiant_win', 'game_mode', 'kills', 'deaths', 'assists', 'gold', 'xp_per_min']
+                    for col in important_cols:
+                        if col in row.index and pd.notna(row[col]):
+                            log_parts.append(f"{col}: {row[col]}")
+                    
+                    # Add first few additional columns (limit to avoid too long entries)
+                    excluded_cols = key_fields + ['start_time'] + important_cols
+                    other_cols = [col for col in row.index 
+                                 if col not in excluded_cols 
+                                 and pd.notna(row[col])][:3]  # Reduced to 3 for cleaner output
+                    for col in other_cols:
+                        log_parts.append(f"{col}: {row[col]}")
+                    
+                    log_entries.append(" | ".join(log_parts))
+            
+            self.log_entries = log_entries
+            
+            # Prepare summary
+            summary_parts = [
+                f"✅ Загружено {total_rows} записей из CSV логов",
+                f"📁 Файлов: {len(all_data)}",
+            ]
+            
+            # List loaded files
+            file_summary = []
+            for file_name, df in all_data.items():
+                file_summary.append(f"• {file_name}: {len(df)} записей")
+            summary_parts.extend(file_summary)
+            
+            # Add active filter information
+            if active_filters:
+                filter_info = []
+                for field, value in active_filters.items():
+                    filter_info.append(f"{field.replace('_', ' ').title()}: {value}")
+                summary_parts.append("🎯 Фильтры: " + ", ".join(filter_info))
+            
+            if request_time:
+                summary_parts.append(f"⏰ Период: 2 дня назад от {pd.to_datetime(request_time, unit='s')}")
+            
+            # Add unique match count if available
+            unique_matches = set()
+            for df in all_data.values():
+                if 'match_id' in df.columns:
+                    unique_matches.update(df['match_id'].dropna().unique())
+            
+            if unique_matches:
+                summary_parts.append(f"🎮 Уникальных матчей: {len(unique_matches)}")
+            
+            return "\n".join(summary_parts)
+            
+        except Exception as e:
+            logger.error(f"Error loading CSV logs: {e}")
+            return f"❌ Ошибка загрузки CSV логов: {str(e)}"
+    
+    def get_csv_logs_summary(self) -> dict:
+        """
+        Get summary information about loaded CSV logs.
+        
+        :return: Dictionary with summary information
+        """
+        if not self.csv_logs_data or (isinstance(self.csv_logs_data, dict) and not self.csv_logs_data):
+            return {"status": "no_data", "message": "CSV логи не загружены"}
+        
+        try:
+            # Handle new format where csv_logs_data is a dict of DataFrames
+            if isinstance(self.csv_logs_data, dict):
+                total_records = sum(len(df) for df in self.csv_logs_data.values())
+                unique_matches = set()
+                time_range = {"start": "N/A", "end": "N/A"}
+                source_files = list(self.csv_logs_data.keys())
+                
+                # Collect unique match IDs and time range
+                start_times = []
+                for file_name, df in self.csv_logs_data.items():
+                    if 'match_id' in df.columns:
+                        unique_matches.update(df['match_id'].dropna().unique())
+                    
+                    if 'start_time' in df.columns:
+                        start_times.extend(df['start_time'].dropna().tolist())
+                
+                # Calculate time range if we have start_times
+                if start_times:
+                    min_time = pd.to_datetime(min(start_times), unit='s')
+                    max_time = pd.to_datetime(max(start_times), unit='s')
+                    time_range = {
+                        "start": min_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "end": max_time.strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                
+                summary = {
+                    "status": "loaded",
+                    "total_records": total_records,
+                    "unique_matches": len(unique_matches),
+                    "unique_files": len(source_files),
+                    "time_range": time_range,
+                    "source_files": source_files
+                }
+            else:
+                # Fallback for old format
+                df = self.csv_logs_data
+                summary = {
+                    "status": "loaded",
+                    "total_records": len(df),
+                    "unique_matches": df['match_id'].nunique() if 'match_id' in df.columns else 0,
+                    "time_range": {
+                        "start": df['start_time'].min() if 'start_time' in df.columns and not df['start_time'].isna().all() else "N/A",
+                        "end": df['start_time'].max() if 'start_time' in df.columns and not df['start_time'].isna().all() else "N/A"
+                    },
+                    "source_files": [df.get('source_file', 'Unknown')]
+                }
+            
+            return summary
+        except Exception as e:
+            return {"status": "error", "message": f"Ошибка анализа данных: {str(e)}"}
 
 
 class AudioManager:
@@ -1284,6 +1553,41 @@ class UIManager:
                                 file_count="multiple"
                             )
                             file_warning = gr.Markdown("Фрагменты ещё не загружены!")
+                        
+                        with gr.Tab("CSV Логи из logs"):
+                            with gr.Row():
+                                user_request_time = gr.DateTime(
+                                    label="Время запроса пользователя",
+                                    value=None,
+                                    info="Будут показаны логи от этого времени до 2 дней назад"
+                                )
+                            
+                            with gr.Row():
+                                with gr.Column():
+                                    user_match_id = gr.Textbox(
+                                        label="Match ID",
+                                        placeholder="Например: 0, 1, 2...",
+                                        value=""
+                                    )
+                                    user_account_id = gr.Textbox(
+                                        label="Account ID",
+                                        placeholder="Например: 0, 1, 2...",
+                                        value=""
+                                    )
+                                with gr.Column():
+                                    user_hero_id = gr.Textbox(
+                                        label="Hero ID",
+                                        placeholder="Например: 86, 51, 83...",
+                                        value=""
+                                    )
+                                    user_player_slot = gr.Textbox(
+                                        label="Player Slot",
+                                        placeholder="Например: 0, 1, 128...",
+                                        value=""
+                                    )
+                            
+                            load_csv_logs_btn = gr.Button("📊 Загрузить CSV логи", variant="primary")
+                            csv_log_status = gr.Markdown("CSV логи не загружены")
 
                     with gr.Column(scale=7):
                         files_selected = gr.Dropdown(
@@ -1424,6 +1728,14 @@ class UIManager:
             ).success(
                 fn=self.document_manager.list_ingested_documents,
                 outputs=files_selected
+            )
+
+            # Load CSV logs from logs
+            load_csv_logs_btn.click(
+                fn=self.document_manager.load_csv_logs_from_data,
+                inputs=[user_request_time, user_match_id, user_account_id, user_hero_id, user_player_slot],
+                outputs=[csv_log_status],
+                queue=True
             )
 
             # Delete documents from db
