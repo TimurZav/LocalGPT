@@ -718,15 +718,12 @@ class DocumentManager:
             logger.error(f"Error during document deletion: {e}")
             return gr.update(choices=[])
     
-    def load_csv_logs_from_data(self, request_time: str, match_id: str, account_id: str, hero_id: str, player_slot: str) -> str:
+    def load_csv_logs_from_data(self, request_time: str, match_id: str) -> str:
         """
         Load and filter CSV logs from logs folder based on time range and key fields.
         
         :param request_time: User request time in ISO format or empty string
         :param match_id: Match ID filter or empty string
-        :param account_id: Account ID filter or empty string
-        :param hero_id: Hero ID filter or empty string
-        :param player_slot: Player slot filter or empty string
         :return: Status message
         """
         try:
@@ -758,10 +755,7 @@ class DocumentManager:
             
             # Apply filters for key fields
             filter_params = {
-                'match_id': match_id.strip() if match_id and match_id.strip() else None,
-                'account_id': account_id.strip() if account_id and account_id.strip() else None,
-                'hero_id': hero_id.strip() if hero_id and hero_id.strip() else None,
-                'player_slot': player_slot.strip() if player_slot and player_slot.strip() else None
+                'match_id': match_id.strip() if match_id and match_id.strip() else None
             }
             
             # Remove None values from filter params
@@ -1569,22 +1563,6 @@ class UIManager:
                                         placeholder="Например: 0, 1, 2...",
                                         value=""
                                     )
-                                    user_account_id = gr.Textbox(
-                                        label="Account ID",
-                                        placeholder="Например: 0, 1, 2...",
-                                        value=""
-                                    )
-                                with gr.Column():
-                                    user_hero_id = gr.Textbox(
-                                        label="Hero ID",
-                                        placeholder="Например: 86, 51, 83...",
-                                        value=""
-                                    )
-                                    user_player_slot = gr.Textbox(
-                                        label="Player Slot",
-                                        placeholder="Например: 0, 1, 128...",
-                                        value=""
-                                    )
                             
                             load_csv_logs_btn = gr.Button("📊 Загрузить CSV логи", variant="primary")
                             csv_log_status = gr.Markdown("CSV логи не загружены")
@@ -1733,7 +1711,7 @@ class UIManager:
             # Load CSV logs from logs
             load_csv_logs_btn.click(
                 fn=self.document_manager.load_csv_logs_from_data,
-                inputs=[user_request_time, user_match_id, user_account_id, user_hero_id, user_player_slot],
+                inputs=[user_request_time, user_match_id],
                 outputs=[csv_log_status],
                 queue=True
             )

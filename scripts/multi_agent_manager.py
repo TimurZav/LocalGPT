@@ -3,6 +3,8 @@
 Использует LangGraph для оркестрации агентов
 """
 import logging
+import tempfile
+import os
 from enum import Enum
 from dataclasses import dataclass
 from claude_code_llm import ClaudeCodeLLM
@@ -267,31 +269,37 @@ class MultiAgentManager:
                     metadata={}
                 )
             else:
-                # Ограничение логов для избежания ошибки "Argument list too long"
-                max_logs_chars = 50000  # Максимальный размер логов в символах
-                max_log_entries = 1000   # Максимальное количество записей логов
-                
-                # Берем последние записи и ограничиваем по размеру
-                log_entries = self.document_manager.log_entries[-max_log_entries:]
+                # # Ограничение логов для избежания ошибки "Argument list too long"
+                # Записываем ВСЕ логи в постоянный файл
+                log_entries = self.document_manager.log_entries
                 all_logs = "\n".join(log_entries)
                 
-                # Если логи все еще слишком большие, обрезаем по символам
-                if len(all_logs) > max_logs_chars:
-                    all_logs = all_logs[-max_logs_chars:]
-                    # Убеждаемся, что не обрезали строку посередине
-                    first_newline = all_logs.find('\n')
-                    if first_newline > 0:
-                        all_logs = all_logs[first_newline + 1:]
-                
+                # Создаем временный файл для логов чтобы обойти ограничение длины аргументов
+                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as temp_file:
+                    temp_file.write(all_logs)
+                    temp_file_path = temp_file.name
+                    temp_file_path = temp_file.name
+
                 logger.info(f"Обрабатываем {len(log_entries)} записей логов, размер: {len(all_logs)} символов")
+                logger.info(f"Логи сохранены во временный файл: {temp_file_path}")
+                # Теперь передаем путь к файлу вместо содержимого
                 
-                response = self.llm.invoke(
-                    self.logs_agent_prompt.format_messages(
-                        dialog_history=dialog_history,
-                        logs=all_logs,
-                        query=query
+                try:
+                    response = self.llm.invoke(
+                        self.logs_agent_prompt.format_messages(
+                            dialog_history=dialog_history,
+                            logs=f"ФАЙЛ С ЛОГАМИ: {temp_file_path}\n\nИспользуйте инструмент Read для чтения файла: Read {temp_file_path}",
+                            query=query
+                        )
                     )
-                )
+                finally:
+                    # Удаляем временный файл после использования
+                    try:
+                        os.unlink(temp_file_path)
+                        logger.info(f"Временный файл удален: {temp_file_path}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить временный файл {temp_file_path}: {e}")
+            
                 
                 logs_result = AgentResult(
                     agent_type="logs",

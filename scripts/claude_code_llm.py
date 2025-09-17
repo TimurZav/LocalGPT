@@ -22,9 +22,9 @@ class ClaudeCodeLLM(LLM):
     """LangChain-совместимая обертка для Claude Code SDK"""
     
     model_name: str = "claude-3-5-sonnet-20241022"
-    max_turns: int = 1
+    max_turns: int = None  # Увеличиваем для выполнения tool calls
     
-    def __init__(self, model_name: str = "claude-3-5-sonnet-20241022", max_turns: int = 1, **kwargs):
+    def __init__(self, model_name: str = "claude-3-5-sonnet-20241022", max_turns: int = 10, **kwargs):
         super().__init__(model_name=model_name, max_turns=max_turns, **kwargs)
         
     def _convert_messages_to_prompt(self, messages: List[BaseMessage]) -> tuple[str, Optional[str]]:
@@ -54,21 +54,26 @@ class ClaudeCodeLLM(LLM):
         **kwargs: Any,
     ) -> str:
         """Основной метод для LLM - выполняет запрос к Claude Code"""
-        # Создаем опции для Claude Code
+        # Создаем опции для Claude Code без ограничения turns и с автоподтверждением
         options = ClaudeCodeOptions(
             system_prompt=kwargs.get('system_prompt'),
-            max_turns=self.max_turns
+            permission_mode="bypassPermissions"  # Автоматически подтверждать выполнение инструментов
         )
         
         # Синхронный запрос с правильной обработкой event loop
         async def _run_query():
-            response_text = ""
+            all_messages = []
+            final_response = ""
+            
             async for message in query(prompt=prompt, options=options):
+                all_messages.append(message)
+                # Собираем только финальные сообщения ассистента
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):
-                            response_text += block.text
-            return response_text
+                            final_response = block.text  # Перезаписываем, чтобы получить последний ответ
+            
+            return final_response
         
         try:
             # Проверяем, есть ли уже запущенный event loop
@@ -95,21 +100,21 @@ class ClaudeCodeLLM(LLM):
         for message_list in messages:
             prompt, system_prompt = self._convert_messages_to_prompt(message_list)
             
-            # Создаем опции для Claude Code
+            # Создаем опции для Claude Code без ограничения turns и с автоподтверждением
             options = ClaudeCodeOptions(
                 system_prompt=system_prompt,
-                max_turns=self.max_turns
+                permission_mode="bypassPermissions"  # Автоматически подтверждать выполнение инструментов
             )
             
             # Выполняем запрос
-            response_text = ""
+            final_response = ""
             async for message in query(prompt=prompt, options=options):
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):
-                            response_text += block.text
+                            final_response = block.text  # Перезаписываем для получения финального ответа
             
-            generations.append([Generation(text=response_text)])
+            generations.append([Generation(text=final_response)])
         
         return LLMResult(generations=generations)
     
