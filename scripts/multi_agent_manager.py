@@ -107,7 +107,6 @@ class MultiAgentManager:
             6. Всегда указывай, откуда взята информация
             7. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов для логичности диалога
             8. Ссылайся на предыдущие ответы, если текущий вопрос связан с ними
-            9. ВАЖНО: Если просят сохранить данные, то сохрани их в файл CLAUDE.md
 
             Структура ответа:
             [Основной интегрированный ответ с использованием обоих источников и контекста диалога]
@@ -192,7 +191,8 @@ class MultiAgentManager:
         
         return "\n\n".join(formatted_history) if formatted_history else "Нет предыдущих сообщений в диалоге."
 
-    def _classify_query(self, state: GraphState) -> GraphState:
+    @staticmethod
+    def _classify_query(state: GraphState) -> GraphState:
         """Классификация запроса - всегда возвращает HYBRID"""
         state["query_type"] = QueryType.HYBRID.value
         state["metadata"] = {"classification_confidence": "high"}
