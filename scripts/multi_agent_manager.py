@@ -133,17 +133,21 @@ class MultiAgentManager:
         """Создание графа агентов"""
         workflow = StateGraph(GraphState)
         
-        # Добавление узлов
-        workflow.add_node("classifier", self._classify_query)
-        workflow.add_node("rag_agent", self._run_rag_agent)
+        # Добавление узлов с индикаторами загрузки
+        workflow.add_node("logs_loading", self._show_logs_loading)
         workflow.add_node("logs_agent", self._run_logs_agent)
+        workflow.add_node("rag_loading", self._show_rag_loading)
+        workflow.add_node("rag_agent", self._run_rag_agent)
+        workflow.add_node("integration_loading", self._show_integration_loading)
         workflow.add_node("integrator", self._integrate_results)
         
-        # Определение маршрутов - простая цепочка
-        workflow.set_entry_point("classifier")
-        workflow.add_edge("classifier", "logs_agent")
-        workflow.add_edge("logs_agent", "rag_agent")
-        workflow.add_edge("rag_agent", "integrator")
+        # Определение маршрутов - цепочка с индикаторами
+        workflow.set_entry_point("logs_loading")
+        workflow.add_edge("logs_loading", "logs_agent")
+        workflow.add_edge("logs_agent", "rag_loading")
+        workflow.add_edge("rag_loading", "rag_agent")
+        workflow.add_edge("rag_agent", "integration_loading")
+        workflow.add_edge("integration_loading", "integrator")
         workflow.add_edge("integrator", END)
         
         return workflow.compile(checkpointer=MemorySaver())
@@ -155,7 +159,8 @@ class MultiAgentManager:
             self.llm = ClaudeCodeLLM(model_name=model_name)
             logger.info(f"Multi-agent system updated to use model: {model_name}")
 
-    def _format_dialog_history(self, dialog_history: Optional[List[dict]]) -> str:
+    @staticmethod
+    def _format_dialog_history(dialog_history: Optional[List[dict]]) -> str:
         """Форматирование истории диалога для промптов"""
         if not dialog_history or len(dialog_history) < 2:
             return "Нет предыдущих сообщений в диалоге."
@@ -192,26 +197,47 @@ class MultiAgentManager:
         return "\n\n".join(formatted_history) if formatted_history else "Нет предыдущих сообщений в диалоге."
 
     @staticmethod
-    def _classify_query(state: GraphState) -> GraphState:
-        """Классификация запроса - всегда возвращает HYBRID"""
-        state["query_type"] = QueryType.HYBRID.value
-        state["metadata"] = {"classification_confidence": "high"}
-        logger.info("Запрос классифицирован как HYBRID")
+    def _show_logs_loading(state: GraphState) -> GraphState:
+        """Показать индикатор загрузки для анализа логов"""
+        if state.get("ui_history") is not None:
+            ui_history = state["ui_history"].copy()
+            ui_history.append({
+                "role": "assistant",
+                "content": "🔍 Анализирую логи системы...",
+                "metadata": {"title": "⏳ Анализ логов"}
+            })
+            state["ui_history"] = ui_history
+        return state
+
+    @staticmethod
+    def _show_rag_loading(state: GraphState) -> GraphState:
+        """Показать индикатор загрузки для поиска в документах"""
+        if state.get("ui_history") is not None:
+            ui_history = state["ui_history"].copy()
+            ui_history.append({
+                "role": "assistant",
+                "content": "📚 Ищу информацию в документах...",
+                "metadata": {"title": "⏳ Поиск в документах"}
+            })
+            state["ui_history"] = ui_history
+        return state
+
+    @staticmethod
+    def _show_integration_loading(state: GraphState) -> GraphState:
+        """Показать индикатор загрузки для интеграции результатов"""
+        if state.get("ui_history") is not None:
+            ui_history = state["ui_history"].copy()
+            ui_history.append({
+                "role": "assistant",
+                "content": "🔗 Интегрирую результаты и создаю финальный ответ...",
+                "metadata": {"title": "⏳ Интеграция результатов"}
+            })
+            state["ui_history"] = ui_history
         return state
 
     def _run_rag_agent(self, state: GraphState) -> GraphState:
-        """Выполнение RAG агента для поиска по документам"""
+        """Выполнение RAG агента для поиска по документах"""
         try:
-            # Показываем индикатор загрузки
-            if state.get("ui_history") is not None:
-                ui_history = state["ui_history"].copy()
-                ui_history.append({
-                    "role": "assistant",
-                    "content": "📚 Ищу информацию в документах...",
-                    "metadata": {"title": "⏳ Поиск в документах"}
-                })
-                state["ui_history"] = ui_history
-                
             query = state["original_query"]
             dialog_history = self._format_dialog_history(state.get("dialog_history"))
 
@@ -253,13 +279,13 @@ class MultiAgentManager:
             state["rag_result"] = rag_result
             
             # Заменяем индикатор загрузки на результат
-            if state.get("ui_history") is not None:
+            if state.get("ui_history") is not None and rag_result.success:
                 ui_history = state["ui_history"].copy()
                 # Заменяем индикатор загрузки на результат
                 if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Поиск в документах":
                     ui_history[-1] = {
                         "role": "assistant",
-                        "content": rag_result.content,
+                        "content": rag_result.content[:200] + "..." if len(rag_result.content) > 200 else rag_result.content,
                         "metadata": {"title": "📚 Результат поиска в документах"}
                     }
                 state["ui_history"] = ui_history
@@ -282,16 +308,6 @@ class MultiAgentManager:
     def _run_logs_agent(self, state: GraphState) -> GraphState:
         """Выполнение агента логов"""
         try:
-            # Показываем индикатор загрузки
-            if state.get("ui_history") is not None:
-                ui_history = state["ui_history"].copy()
-                ui_history.append({
-                    "role": "assistant",
-                    "content": "🔍 Анализирую логи системы...",
-                    "metadata": {"title": "⏳ Анализ логов"}
-                })
-                state["ui_history"] = ui_history
-            
             query = state["original_query"]
             dialog_history = self._format_dialog_history(state.get("dialog_history"))
             
@@ -350,13 +366,13 @@ class MultiAgentManager:
             state["logs_result"] = logs_result
             
             # Заменяем индикатор загрузки на результат
-            if state.get("ui_history") is not None:
+            if state.get("ui_history") is not None and logs_result.success:
                 ui_history = state["ui_history"].copy()
                 # Заменяем индикатор загрузки на результат
                 if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Анализ логов":
                     ui_history[-1] = {
                         "role": "assistant",
-                        "content": logs_result.content,
+                        "content": logs_result.content[:200] + "..." if len(logs_result.content) > 200 else logs_result.content,
                         "metadata": {"title": "📊 Результат анализа логов"}
                     }
                 state["ui_history"] = ui_history
@@ -379,16 +395,6 @@ class MultiAgentManager:
     def _integrate_results(self, state: GraphState) -> GraphState:
         """Интеграция результатов"""
         try:
-            # Показываем индикатор загрузки
-            if state.get("ui_history") is not None:
-                ui_history = state["ui_history"].copy()
-                ui_history.append({
-                    "role": "assistant",
-                    "content": "🔗 Интегрирую результаты и создаю финальный ответ...",
-                    "metadata": {"title": "⏳ Интеграция результатов"}
-                })
-                state["ui_history"] = ui_history
-                
             query = state["original_query"]
             dialog_history = self._format_dialog_history(state.get("dialog_history"))
             rag_result = state.get("rag_result")
