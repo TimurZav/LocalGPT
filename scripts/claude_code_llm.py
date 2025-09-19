@@ -2,14 +2,13 @@
 Обертка для Claude Code SDK для совместимости с LangChain интерфейсом
 """
 import asyncio
-from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
-
-from claude_code_sdk import query, ClaudeCodeOptions, AssistantMessage, TextBlock
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
+from typing import List, Dict, Any, Optional
 from langchain_core.language_models.llms import LLM
 from langchain_core.outputs import LLMResult, Generation
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
+from claude_code_sdk import query, ClaudeCodeOptions, AssistantMessage, TextBlock
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
 
 @dataclass 
@@ -27,14 +26,15 @@ class ClaudeCodeLLM(LLM):
     def __init__(self, model_name: str = "claude-3-5-sonnet-20241022", max_turns: int = 10, **kwargs):
         super().__init__(model_name=model_name, max_turns=max_turns, **kwargs)
         
-    def _convert_messages_to_prompt(self, messages: List[BaseMessage]) -> tuple[str, Optional[str]]:
+    @staticmethod
+    def _convert_messages_to_prompt(messages: List[BaseMessage]) -> tuple[str, Optional[str]]:
         """Конвертирует LangChain сообщения в промпт для Claude Code"""
-        system_prompt = None
+        system_prompt: Optional[str] = None
         user_messages = []
         
         for message in messages:
             if isinstance(message, SystemMessage):
-                system_prompt = message.content
+                system_prompt = str(message.content)
             elif isinstance(message, HumanMessage):
                 user_messages.append(message.content)
             elif isinstance(message, AIMessage):
@@ -77,7 +77,7 @@ class ClaudeCodeLLM(LLM):
         
         try:
             # Проверяем, есть ли уже запущенный event loop
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
             # Если есть, создаем новый поток для выполнения
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -128,17 +128,17 @@ class ClaudeCodeLLM(LLM):
         """Синхронная генерация ответов"""
         try:
             # Проверяем, есть ли уже запущенный event loop
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
             # Если есть, создаем новый поток для выполнения
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, self._agenerate(messages, stop, run_manager, **kwargs))
+                future = executor.submit(asyncio.run, self._agenerate(messages, stop, run_manager, **kwargs))  #  type: ignore
                 return future.result()
         except RuntimeError:
             # Нет запущенного event loop, можем использовать asyncio.run
-            return asyncio.run(self._agenerate(messages, stop, run_manager, **kwargs))
+            return asyncio.run(self._agenerate(messages, stop, run_manager, **kwargs))  #  type: ignore
     
-    def invoke(self, input_data, config=None, **kwargs):
+    def invoke(self, input_data, config=None, **kwargs) -> ClaudeCodeResponse:
         """Простой интерфейс для вызова (совместимость с LangChain)"""
         # Handle different input types
         if isinstance(input_data, str):

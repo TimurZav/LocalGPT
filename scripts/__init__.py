@@ -418,8 +418,8 @@ def get_stream_handler() -> logging.StreamHandler:
     return stream_handler
 
 
-def get_logger(name: str) -> logging.getLogger:
-    logger: logging.getLogger = logging.getLogger(name)
+def get_logger(name: str) -> logging.Logger:
+    logger: logging.Logger = logging.getLogger(name)
     if logger.hasHandlers():
         logger.handlers.clear()
     logger.addHandler(get_stream_handler())

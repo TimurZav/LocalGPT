@@ -97,6 +97,7 @@ langchain-neo4j==0.5.0
 langchain-experimental==0.3.4
 langgraph==0.6.7
 neo4j==5.28.2
+neo4j-graphrag==1.10.0
 langcodes==3.4.1
 langsmith==0.4.28
 language_data==1.2.0

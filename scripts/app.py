@@ -11,23 +11,21 @@ from gradio_modal import Modal
 from neo4j import GraphDatabase
 from tinydb import TinyDB, where
 from functions.functions import *
+from tinydb.queries import QueryLike
 from datetime import datetime, timedelta
 from claude_code_llm import ClaudeCodeLLM
+from langsmith_config import trace_function
+from neo4j_graphrag.types import SearchType
 from langchain.docstore.document import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_neo4j import Neo4jVector, Neo4jGraph
+from typing import List, Optional, Union, Any, cast
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from typing import List, Optional, Tuple, Generator, Union
-from langchain_neo4j import Neo4jVector, Neo4jGraph, GraphCypherQAChain
 from langchain_experimental.graph_transformers import LLMGraphTransformer
-from natasha import MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
-
-# LangSmith интеграция
-from langsmith_config import trace_function, is_tracing_enabled
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-logger: logging.getLogger = get_logger(
+logger: logging.Logger = get_logger(
     str(os.path.basename(__file__).replace(".py", "_") + str(datetime.now().date()))
 )
 
@@ -45,14 +43,14 @@ class SystemPromptManager:
         """
         self.system_prompt = system_prompt_input
 
-    def set_current_mode(self, mode: str) -> gr.update:
+    def set_current_mode(self, mode: str) -> dict[str, Any]:
         """
         Setting prompt.
         :param mode: Mode.
         :return:
         """
         self.mode = mode
-        self.set_system_prompt(self._get_default_system_prompt(mode))
+        self.set_system_prompt(self._get_default_system_prompt())
         # Update placeholder and allow interaction if default system prompt is set
         if self.system_prompt:
             return gr.update(placeholder=self.system_prompt, interactive=True)
@@ -61,10 +59,9 @@ class SystemPromptManager:
             return gr.update(placeholder=self.system_prompt, interactive=False)
 
     @staticmethod
-    def _get_default_system_prompt(mode: str) -> str:
+    def _get_default_system_prompt() -> str:
         """
         Returning prompt of mode.
-        :param mode: Mode.
         :return: Prompt.
         """
         return QUERY_SYSTEM_PROMPT
@@ -96,9 +93,10 @@ class AnalyticsManager:
         }
         
         # Проверяем, существует ли уже диалог с таким ID
-        existing = self.dialogs_db.search(where('session_id') == session_id)
+        filter_query = cast(QueryLike, cast(object, where('session_id') == session_id))
+        existing = self.dialogs_db.search(filter_query)
         if existing:
-            self.dialogs_db.update(dialog_data, where('session_id') == session_id)
+            self.dialogs_db.update(dialog_data, filter_query)
         else:
             self.dialogs_db.insert(dialog_data)
     
@@ -114,14 +112,14 @@ class AnalyticsManager:
         """
         Загрузить конкретную диалоговую сессию.
         """
-        result = self.dialogs_db.search(where('session_id') == session_id)
+        result = self.dialogs_db.search(cast(QueryLike, cast(object, where('session_id') == session_id)))
         return result[0]['messages'] if result else None
     
     def delete_dialog_session(self, session_id: str) -> bool:
         """
         Удалить диалоговую сессию.
         """
-        removed = self.dialogs_db.remove(where('session_id') == session_id)
+        removed = self.dialogs_db.remove(cast(QueryLike, cast(object, where('session_id') == session_id)))
         return len(removed) > 0
 
 
@@ -162,7 +160,7 @@ class AuthManager:
             logger.error(f"Error during login request: {e}")
             return {"access_token": None, "is_success": False, "message": "Request failed"}
 
-    def update_user_ui_state(self, local_data: Optional[dict], is_visible: bool = True):
+    def update_user_ui_state(self, local_data: Optional[dict], is_visible: bool = True) -> list:
         """
         Retrieves current user information and updates the user interface based on login status.
 
@@ -198,7 +196,7 @@ class AuthManager:
         obj_tabs.append(self.document_manager.list_ingested_documents())
         return obj_tabs
 
-    def toggle_login_state(self, local_data: Optional[dict], login_btn: gr.component):
+    def toggle_login_state(self, local_data: Optional[dict], login_btn: dict):
         """
         Handles user login/logout functionality and updates the UI accordingly.
 
@@ -210,7 +208,7 @@ class AuthManager:
         :param login_btn: The Gradio component representing the login button.
         :return: A list of UI updates to be applied based on the user's login state.
         """
-        data = self.update_user_ui_state(local_data)
+        data: list[dict] = self.update_user_ui_state(local_data)
         is_logged_in = isinstance(data[0], dict) and data[0].get("access_token")
 
         obj_tabs = [gr.update(visible=not is_logged_in)] + [gr.update(visible=False) for _ in range(2)]
@@ -221,10 +219,6 @@ class AuthManager:
 
 class DocumentManager:
     def __init__(self):
-        # self.embeddings: HuggingFaceEmbeddings = HuggingFaceEmbeddings(
-        #     model_name=EMBEDDER_NAME,
-        #     cache_folder=MODELS_DIR
-        # )
         self.embeddings: OpenAIEmbeddings = OpenAIEmbeddings(model="text-embedding-3-large")
         self.collection: str = "all-documents"
         
@@ -255,7 +249,7 @@ class DocumentManager:
         self.data_path: str = "/home/timur/PycharmWork/LocalGPT/logs"  # Path to data folder
         
         # Initialize LLM for graph construction
-        self.llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
+        self.llm = ChatOpenAI(model="gpt-4.1", temperature=0)
         self.llm_transformer = LLMGraphTransformer(llm=self.llm)
         self.cypher_llm = ChatOpenAI(temperature=0)
     
@@ -265,7 +259,7 @@ class DocumentManager:
         """
         try:
             # Проверяем, есть ли существующий векторный индекс
-            self.neo4j_vector: Optional[Neo4jVector] = Neo4jVector.from_existing_index(
+            self.neo4j_vector: Neo4jVector = Neo4jVector.from_existing_index(
                 embedding=self.embeddings,
                 index_name="vector",
                 url=self.neo4j_url,
@@ -274,39 +268,12 @@ class DocumentManager:
                 node_label="Document",
                 text_node_property="text",
                 embedding_node_property="embedding",
-                search_type="hybrid",
+                search_type=SearchType.HYBRID,
                 keyword_index_name="keyword"
             )
             logger.info("✅ Подключились к существующему векторному индексу")
         except Exception as e:
             logger.info(f"ℹ️ Существующий векторный индекс не найден (это нормально при первом запуске): {e}")
-            self.neo4j_vector = None
-
-    def _normalize_neo4j_label(self, label: str) -> str:
-        """
-        Нормализация лейбла для Neo4j (убирает пробелы и спец. символы)
-        
-        :param label: Исходный лейбл
-        :return: Нормализованный лейбл
-        """
-        if not label:
-            return "Entity"
-        
-        # Заменяем пробелы, дефисы и другие символы на подчёркивания
-        normalized = label.replace(" ", "_").replace("-", "_").replace("'", "").replace(".", "_")
-        
-        # Удаляем недопустимые символы и оставляем только буквы, цифры и подчёркивания
-        normalized = "".join(c for c in normalized if c.isalnum() or c == "_")
-        
-        # Убираем начальные цифры (Neo4j лейблы не могут начинаться с цифры)
-        while normalized and normalized[0].isdigit():
-            normalized = normalized[1:]
-        
-        # Если после очистки лейбл пустой, возвращаем дефолтный
-        if not normalized:
-            return "Entity"
-        
-        return normalized
 
     @staticmethod
     def load_document_from_file(file_path: str) -> Document:
@@ -407,7 +374,7 @@ class DocumentManager:
                 username=self.neo4j_username,
                 password=self.neo4j_password,
                 index_name="vector",
-                search_type="hybrid"
+                search_type=SearchType.HYBRID
             )
             
             logger.info("🎯 Векторные эмбеддинги созданы и связаны с графом!")
@@ -498,8 +465,8 @@ class DocumentManager:
             
             try:
                 os.chmod(FILES_DIR, 0o0777)
-            except:
-                pass  # Ignore permission errors
+            except Exception as ex:
+                logger.error(ex)
                 
             return file_warning
             
@@ -542,7 +509,7 @@ class DocumentManager:
     @trace_function("Document_Retrieval")
     def retrieve_documents(
         self,
-        history: List[dict],
+        history,
         collection_radio: str,
         k_documents: int
     ) -> str:
@@ -559,21 +526,11 @@ class DocumentManager:
             or not history
             or history[-1]["role"] != "user"
         ):
-            return "Появятся после задавания вопросов", []
+            return ""
 
-        last_user_message = history[-1].get("content")
-        docs = []
-        
+        last_user_message: str = history[-1].get("content")
         try:
-            # Get Cypher query and graph context
-            graph_context, cypher_query = self._get_graph_context(last_user_message)
-            
-            # Use documents with custom retrieval query if we have a cypher query
-            if cypher_query:
-                docs = self._search_with_custom_cypher(last_user_message, k_documents, cypher_query)
-            
-            if not docs:
-                docs = self._search_with_custom_cypher(last_user_message, k_documents, cypher_query='')
+            docs = self._search_with_custom_cypher(last_user_message, k_documents)
             
             # Format docs for UI display
             formatted_docs = []
@@ -607,64 +564,12 @@ class DocumentManager:
                 </div>
                 """
                 formatted_docs.append(document_html)
-            
-            result_html = "".join(formatted_docs)
-            if graph_context:
-                result_html = result_html + f"""<br>
-                <div>
-                    <strong>Graph Cypher Query:</strong>
-                    <br>{cypher_query}</br>
-                </div>
-                <div>
-                    <strong>Graph Context:</strong>
-                    <br>{graph_context}</br>
-                </div>
-                """
-            
-            return result_html
+            return "".join(formatted_docs)
         except Exception as e:
             logger.error(f"Error retrieving documents for UI: {e}")
-            return f"Ошибка при поиске документов: {str(e)}", []
-    
-    def _get_graph_context(self, query: str) -> Tuple[str, str]:
-        """
-        Get additional context from Neo4j graph using GraphCypherQAChain.
-        Returns tuple of (context, cypher_query)
-        """
-        if not self.neo4j_graph or not self.llm:
-            return "", ""
-        
-        try:
-            # # Создаём GraphCypherQAChain с return_intermediate_steps=True
-            # cypher_qa = GraphCypherQAChain.from_llm(
-            #     graph=self.neo4j_graph, 
-            #     llm=self.llm,
-            #     cypher_llm=self.cypher_llm,
-            #     allow_dangerous_requests=True,
-            #     verbose=True,
-            #     return_direct=True,
-            #     return_intermediate_steps=True
-            # )
-            
-            # # Запрашиваем контекст из графа знаний
-            # logger.info(f"🔍 Поиск в графе знаний: {query}")
-            # result = cypher_qa(query)
-            
-            # # Теперь result содержит и промежуточные шаги
-            # cypher_query = result.get("intermediate_steps", [{}])[-1].get("query")
-            # answer = result.get("result", "")
-            
-            # logger.info(f"🔍 Сгенерированный Cypher запрос: {cypher_query}")
-            # logger.info(f"📊 Найден контекст из графа: {len(answer)} символов")
+            return ""
 
-            # return answer, cypher_query
-            
-            return "", ""
-        except Exception as e:
-            logger.error(f"❌ Ошибка GraphCypherQAChain: {e}")
-            return "", ""
-
-    def _search_with_custom_cypher(self, query: str, k: int, cypher_query: str):
+    def _search_with_custom_cypher(self, query: str, k: int):
         """
         Perform document search using a custom Cypher query combined with vector similarity.
         """
@@ -849,9 +754,8 @@ class DocumentManager:
             for file_name, df in all_data.items():
                 for _, row in df.iterrows():
                     # Create a log entry string with key information
-                    log_parts = []
-                    log_parts.append(f"File: {file_name}")
-                    
+                    log_parts = [f"File: {file_name}"]
+
                     # Add key identification fields first
                     key_fields = ['match_id', 'account_id', 'hero_id', 'player_slot']
                     for field in key_fields:
@@ -863,8 +767,9 @@ class DocumentManager:
                         try:
                             timestamp = pd.to_datetime(row['start_time'], unit='s')
                             log_parts.append(f"Start_Time: {timestamp}")
-                        except:
+                        except Exception as e:
                             log_parts.append(f"Start_Time: {row['start_time']}")
+                            logger.error(e)
                     
                     # Add other important columns based on file type
                     important_cols = ['duration', 'radiant_win', 'game_mode', 'kills', 'deaths', 'assists', 'gold', 'xp_per_min']
@@ -927,7 +832,7 @@ class DocumentManager:
         
         :return: Dictionary with summary information
         """
-        if not self.csv_logs_data or (isinstance(self.csv_logs_data, dict) and not self.csv_logs_data):
+        if self.csv_logs_data.empty or (isinstance(self.csv_logs_data, dict) and not self.csv_logs_data):
             return {"status": "no_data", "message": "CSV логи не загружены"}
         
         try:
@@ -1003,7 +908,7 @@ class AudioManager:
         return audio, ret
 
     @staticmethod
-    def stop_recording() -> gr.component:
+    def stop_recording() -> gr.Audio:
         """
         Stops recording and resets the current stream.
         :return: The Gradio component.
@@ -1027,7 +932,7 @@ class AudioManager:
             y = y.mean(axis=1)
         y = y.astype(np.float32)
         y /= np.max(np.abs(y))
-        messages["text"] = self.pipeline({"sampling_rate": sr, "raw": y})["text"]
+        messages["text"] = self.pipeline({"sampling_rate": sr, "raw": y})["text"]  #  type: ignore
 
         return messages, None
 
@@ -1035,7 +940,7 @@ class AudioManager:
         """
         Downloads an audio file and transcribes it into text.
         
-        ::param file_path: Path to the audio file
+        :param file_path: Path to the audio file
         :return: Transcribed text or error message
         """
         try:
@@ -1052,7 +957,7 @@ class AudioManager:
             if np.max(np.abs(data)) > 0:
                 data /= np.max(np.abs(data))
 
-            transcribed_text = self.pipeline({"sampling_rate": sr, "raw": data})["text"]
+            transcribed_text = self.pipeline({"sampling_rate": sr, "raw": data})["text"]  #  type: ignore
             logger.info(f"Successfully transcribed audio file: {file_path}")
             return transcribed_text.strip()
         except Exception as e:
@@ -1140,9 +1045,7 @@ class ModelManager:
         self,
         model: str,
         history: List[dict],
-        mode: str,
         retrieved_docs: str,
-        is_use_tools: bool,
         uid: str
     ):
         """
@@ -1150,9 +1053,7 @@ class ModelManager:
 
         :param model: Model of the list.
         :param history: List of conversation pairs (user input and bot responses).
-        :param mode: Operation mode, which influences the use of context in responses.
         :param retrieved_docs: Relevant documents retrieved to help answer the user query.
-        :param is_use_tools: A boolean indicating whether to enable multi-agent system.
         :param uid: Unique identifier for the current user session, useful for logging and tracking.
         :return: Yields updated conversation history after each token generated, and the final response with sources.
         """
@@ -1162,104 +1063,41 @@ class ModelManager:
             return
 
         logger.info(f"Beginning response generation [uid - {uid}]")
+        logger.info(f"Using multi-agent system with real-time updates [uid - {uid}]")
 
-        # Use multi-agent approach with real-time updates
-        if is_use_tools and self.multi_agent_manager:
-            logger.info(f"Using multi-agent system with real-time updates [uid - {uid}]")
-            
-            # Get the last user message for processing
-            last_user_message = history[-1].get("content", "") if history else ""
-            
-            # Update model in multi-agent system
-            self.update_model(model)
-            self.multi_agent_manager.update_model(model)
-            
-            try:
-                # Use the new streaming method from multi_agent_manager
-                streaming_generator = self.multi_agent_manager.process_query_with_streaming(
-                    query=last_user_message,
-                    dialog_history=history,
-                    thread_id=uid,
-                    retrieved_docs=retrieved_docs
-                )
-                
-                # Yield each step from the multi-agent streaming
-                for updated_history in streaming_generator:
-                    yield updated_history
-                    
-                logger.info(f"Multi-agent streaming completed [uid - {uid}]")
-                
-            except Exception as e:
-                logger.error(f"Multi-agent streaming error: {e}")
-                error_history = history.copy()
-                error_history.append({
-                    "role": "assistant",
-                    "content": f"Произошла ошибка в многоагентной системе: {str(e)}",
-                    "metadata": {"title": "❌ Ошибка многоагентной системы"}
-                })
-                yield error_history
-            
-        else:
-            # Simple approach fallback
-            logger.info(f"Using simple approach [uid - {uid}]")
-            history_copy = history.copy()
-            history_copy.append({
-                "role": "assistant",
-                "content": "Обрабатываю запрос...",
-                "metadata": {"title": "⚡ Быстрый ответ"}
-            })
-            yield history_copy
-            
-            response_text, _ = self._log_based_approach(
-                history, mode, retrieved_docs, uid, model, is_use_tools
+        # Get the last user message for processing
+        last_user_message = history[-1].get("content", "") if history else ""
+
+        # Update model in multi-agent system
+        self.update_model(model)
+        self.multi_agent_manager.update_model(model)
+
+        try:
+            # Use the new streaming method from multi_agent_manager
+            streaming_generator = self.multi_agent_manager.process_query_with_streaming(
+                query=last_user_message,
+                dialog_history=history,
+                thread_id=uid,
+                retrieved_docs=retrieved_docs
             )
-            
-            history_final = history.copy()
-            history_final.append({"role": "assistant", "content": response_text})
-            yield history_final
+
+            # Yield each step from the multi-agent streaming
+            for updated_history in streaming_generator:
+                yield updated_history
+
+            logger.info(f"Multi-agent streaming completed [uid - {uid}]")
+
+        except Exception as e:
+            logger.error(f"Multi-agent streaming error: {e}")
+            error_history = history.copy()
+            error_history.append({
+                "role": "assistant",
+                "content": f"Произошла ошибка в многоагентной системе: {str(e)}",
+                "metadata": {"title": "❌ Ошибка многоагентной системы"}
+            })
+            yield error_history
         
         self.message_manager.queue -= 1
-
-    def _log_based_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str, model: str, use_log_search: bool) -> tuple[str, list]:
-        """Use MultiAgentManager for hybrid RAG+Logs approach"""
-        
-        # Update model if changed
-        self.update_model(model)
-        
-        # Get the last user message
-        last_user_message = history[-1].get("content", "") if history else ""
-        
-        # Use Multi-Agent System if logs are enabled and available
-        if use_log_search and self.multi_agent_manager:
-            try:
-                logger.info(f"Using multi-agent system (RAG+Logs) with model {model} [uid - {uid}]")
-                # Update model in multi-agent system
-                self.multi_agent_manager.update_model(model)
-                
-                result = self.multi_agent_manager.process_query_sync(
-                    query=last_user_message,
-                    dialog_history=history,
-                    thread_id=uid,
-                    retrieved_docs=retrieved_docs
-                )
-                
-                response_text = result["answer"]
-                files = result["sources"]
-                
-                # Add information about query type
-                query_type_info = ""
-                if result["query_type"] == "hybrid":
-                    query_type_info = "\n\n*Использованы данные из документов и логов*"
-                
-                response_text += query_type_info
-                
-                logger.info(f"Multi-agent response completed: type={result['query_type']} [uid - {uid}]")
-                
-                return response_text, files
-                
-            except Exception as e:
-                logger.error(f"Error in multi-agent system, falling back to simple approach: {e}")
-
 
 
 class UIManager:
@@ -1285,7 +1123,8 @@ class UIManager:
         # Текущая сессия диалога
         self.current_session_id: str = str(uuid.uuid4())
     
-    def _create_neo4j_directories(self):
+    @staticmethod
+    def _create_neo4j_directories():
         """
         Create Neo4j directories for Docker volumes.
         """
@@ -1312,7 +1151,7 @@ class UIManager:
         self.current_session_id = str(uuid.uuid4())
         return [], self.get_dialog_choices()
     
-    def get_dialog_choices(self) -> gr.update:
+    def get_dialog_choices(self) -> dict:
         """
         Получает список сохраненных диалогов для UI.
         """
@@ -1828,7 +1667,7 @@ class UIManager:
                 queue=True,
             ).success(
                 fn=self.model_manager.generate_response_stream,
-                inputs=[model, chatbot, collection_radio, retrieved_docs, is_use_tools, uid],
+                inputs=[model, chatbot, retrieved_docs, uid],
                 outputs=chatbot,
                 queue=True
             ).success(

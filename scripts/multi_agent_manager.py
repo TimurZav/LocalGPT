@@ -2,27 +2,23 @@
 Многоагентная система для обработки гибридных запросов RAG + Logs
 Использует LangGraph для оркестрации агентов с LangSmith мониторингом
 """
+import os
 import logging
 import tempfile
-import os
-from enum import Enum
+from pydantic import BaseModel
 from dataclasses import dataclass
 from claude_code_llm import ClaudeCodeLLM
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.prompts import ChatPromptTemplate
-from typing import Dict, List, Any, Optional, TypedDict, Annotated, Generator
-
-# LangSmith интеграция
+from typing import Dict, List, Any, Optional, Annotated, Generator
 from langsmith_config import trace_agent, trace_function, is_tracing_enabled
 
 logger = logging.getLogger(__name__)
 
-class QueryType(Enum):
-    """Типы запросов"""
-    HYBRID = "hybrid"
 
 @dataclass
 class AgentResult:
@@ -34,7 +30,8 @@ class AgentResult:
     metadata: Dict[str, Any]
     error: Optional[str] = None
 
-class GraphState(TypedDict):
+
+class GraphState(BaseModel):
     """Состояние графа агентов"""
     messages: Annotated[List, add_messages]
     original_query: str
@@ -165,7 +162,7 @@ class MultiAgentManager:
     @staticmethod
     def _format_dialog_history(dialog_history: Optional[List[dict]]) -> str:
         """Форматирование истории диалога для промптов"""
-        if not dialog_history or len(dialog_history) < 2:
+        if not dialog_history or len(dialog_history) < 2:  # type: ignore
             return "Нет предыдущих сообщений в диалоге."
         
         # Берем последние несколько пар вопрос-ответ (максимум 3 пары)
@@ -173,7 +170,7 @@ class MultiAgentManager:
         formatted_history = []
         
         # Исключаем последнее сообщение пользователя (это текущий вопрос)
-        history_to_process = dialog_history[:-1]
+        history_to_process = dialog_history[:-1]  # type: ignore
         
         # Группируем по парам user -> assistant
         pairs = []
@@ -227,54 +224,54 @@ class MultiAgentManager:
     @staticmethod
     def _show_logs_loading(state: GraphState) -> GraphState:
         """Показать индикатор загрузки для анализа логов"""
-        if state.get("ui_history") is not None:
-            ui_history = state["ui_history"].copy()
+        if state.ui_history is not None:
+            ui_history = state.ui_history.copy()
             loading_content = MultiAgentManager._create_loading_content("🔍", "Анализирую логи системы")
             ui_history.append({
                 "role": "assistant", 
                 "content": loading_content,
                 "metadata": {"title": "⏳ Анализ логов"}
             })
-            state["ui_history"] = ui_history
+            state.ui_history = ui_history
         return state
 
     @staticmethod
     def _show_rag_loading(state: GraphState) -> GraphState:
         """Показать индикатор загрузки для поиска в документах"""
-        if state.get("ui_history") is not None:
-            ui_history = state["ui_history"].copy()
+        if state.ui_history is not None:
+            ui_history = state.ui_history.copy()
             loading_content = MultiAgentManager._create_loading_content("📚", "Ищу информацию в документах")
             ui_history.append({
                 "role": "assistant",
                 "content": loading_content,
                 "metadata": {"title": "⏳ Поиск в документах"}
             })
-            state["ui_history"] = ui_history
+            state.ui_history = ui_history
         return state
 
     @staticmethod
     def _show_integration_loading(state: GraphState) -> GraphState:
         """Показать индикатор загрузки для интеграции результатов"""
-        if state.get("ui_history") is not None:
-            ui_history = state["ui_history"].copy()
+        if state.ui_history is not None:
+            ui_history = state.ui_history.copy()
             loading_content = MultiAgentManager._create_loading_content("🔗", "Интегрирую результаты и создаю финальный ответ")
             ui_history.append({
                 "role": "assistant",
                 "content": loading_content,
                 "metadata": {"title": "⏳ Интеграция результатов"}
             })
-            state["ui_history"] = ui_history
+            state.ui_history = ui_history
         return state
 
     @trace_agent("RAG_Agent")
     def _run_rag_agent(self, state: GraphState) -> GraphState:
         """Выполнение RAG агента для поиска по документах"""
         try:
-            query = state["original_query"]
-            dialog_history = self._format_dialog_history(state.get("dialog_history"))
+            query = state.original_query
+            dialog_history = self._format_dialog_history(state.dialog_history)
 
             # Получение контекста из документов через переданные retrieved_docs
-            rag_context = state.get("retrieved_docs", "")
+            rag_context = state.retrieved_docs or ""
             sources = ["documents"]  # Общий источник для переданных документов
             
             if not rag_context:
@@ -287,7 +284,7 @@ class MultiAgentManager:
                 )
             else:
                 # Получение результата логов, если есть
-                logs_result = state.get("logs_result")
+                logs_result = state.logs_result
                 logs_content = logs_result.content if logs_result and logs_result.success else "Анализ логов не выполнен"
                 
                 # Генерация ответа на основе контекста документов + результат логов
@@ -308,11 +305,11 @@ class MultiAgentManager:
                     metadata={"context_length": len(rag_context), "sources_count": len(sources)}
                 )
 
-            state["rag_result"] = rag_result
+            state.rag_result = rag_result
             
             # Заменяем индикатор загрузки на результат
-            if state.get("ui_history") is not None:
-                ui_history = state["ui_history"].copy()
+            if state.ui_history is not None:
+                ui_history = state.ui_history.copy()
                 # Заменяем индикатор загрузки на результат
                 if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Поиск в документах":
                     ui_history[-1] = {
@@ -320,14 +317,14 @@ class MultiAgentManager:
                         "content": rag_result.content[:200] + "..." if len(rag_result.content) > 200 else rag_result.content,
                         "metadata": {"title": "📚 Результат поиска в документах"}
                     }
-                state["ui_history"] = ui_history
+                state.ui_history = ui_history
             
             logger.info(f"RAG агент завершен: success={rag_result.success}")
             return state
             
         except Exception as e:
             logger.error(f"Ошибка RAG агента: {e}")
-            state["rag_result"] = AgentResult(
+            state.rag_result = AgentResult(
                 agent_type="rag",
                 success=False,
                 content=f"Ошибка обработки документов: {str(e)}",
@@ -341,8 +338,8 @@ class MultiAgentManager:
     def _run_logs_agent(self, state: GraphState) -> GraphState:
         """Выполнение агента логов"""
         try:
-            query = state["original_query"]
-            dialog_history = self._format_dialog_history(state.get("dialog_history"))
+            query = state.original_query
+            dialog_history = self._format_dialog_history(state.dialog_history)
             
             # Получение всех логов
             if not self.document_manager.log_entries:
@@ -359,7 +356,7 @@ class MultiAgentManager:
                 log_entries = self.document_manager.log_entries
                 all_logs = "\n".join(log_entries)
                 
-                # Создаем временный файл для логов чтобы обойти ограничение длины аргументов
+                # Создаем временный файл для логов, чтобы обойти ограничение длины аргументов
                 with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as temp_file:
                     temp_file.write(all_logs)
                     temp_file_path = temp_file.name
@@ -367,24 +364,21 @@ class MultiAgentManager:
 
                 logger.info(f"Обрабатываем {len(log_entries)} записей логов, размер: {len(all_logs)} символов")
                 logger.info(f"Логи сохранены во временный файл: {temp_file_path}")
-                # Теперь передаем путь к файлу вместо содержимого
-                
-                try:
-                    response = self.llm.invoke(
-                        self.logs_agent_prompt.format_messages(
-                            dialog_history=dialog_history,
-                            logs=f"ФАЙЛ С ЛОГАМИ: {temp_file_path}\n\nИспользуйте инструмент Read для чтения файла: Read {temp_file_path}",
-                            query=query
-                        )
+
+                response = self.llm.invoke(
+                    self.logs_agent_prompt.format_messages(
+                        dialog_history=dialog_history,
+                        logs=f"ФАЙЛ С ЛОГАМИ: {temp_file_path}\n\nИспользуйте инструмент Read для чтения файла: Read {temp_file_path}",
+                        query=query
                     )
-                finally:
-                    # Удаляем временный файл после использования
-                    try:
-                        os.unlink(temp_file_path)
-                        logger.info(f"Временный файл удален: {temp_file_path}")
-                    except Exception as e:
-                        logger.warning(f"Не удалось удалить временный файл {temp_file_path}: {e}")
-            
+                )
+
+                # Удаляем временный файл после использования
+                try:
+                    os.unlink(temp_file_path)
+                    logger.info(f"Временный файл удален: {temp_file_path}")
+                except Exception as e:
+                    logger.warning(f"Не удалось удалить временный файл {temp_file_path}: {e}")
                 
                 logs_result = AgentResult(
                     agent_type="logs",
@@ -396,11 +390,11 @@ class MultiAgentManager:
                     }
                 )
             
-            state["logs_result"] = logs_result
+            state.logs_result = logs_result
             
             # Заменяем индикатор загрузки на результат
-            if state.get("ui_history") is not None:
-                ui_history = state["ui_history"].copy()
+            if state.ui_history is not None:
+                ui_history = state.ui_history.copy()
                 # Заменяем индикатор загрузки на результат
                 if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Анализ логов":
                     ui_history[-1] = {
@@ -408,14 +402,14 @@ class MultiAgentManager:
                         "content": logs_result.content[:200] + "..." if len(logs_result.content) > 200 else logs_result.content,
                         "metadata": {"title": "📊 Результат анализа логов"}
                     }
-                state["ui_history"] = ui_history
+                state.ui_history = ui_history
             
             logger.info(f"Агент логов завершен: success={logs_result.success}, processed {len(self.document_manager.log_entries) if self.document_manager.log_entries else 0} logs")
             return state
             
         except Exception as e:
             logger.error(f"Ошибка агента логов: {e}")
-            state["logs_result"] = AgentResult(
+            state.logs_result = AgentResult(
                 agent_type="logs",
                 success=False,
                 content=f"Ошибка анализа логов: {str(e)}",
@@ -429,10 +423,10 @@ class MultiAgentManager:
     def _integrate_results(self, state: GraphState) -> GraphState:
         """Интеграция результатов"""
         try:
-            query = state["original_query"]
-            dialog_history = self._format_dialog_history(state.get("dialog_history"))
-            rag_result = state.get("rag_result")
-            logs_result = state.get("logs_result")
+            query = state.original_query
+            dialog_history = self._format_dialog_history(state.dialog_history)
+            rag_result = state.rag_result
+            logs_result = state.logs_result
 
             # Подготовка результатов для интеграции
             rag_content = rag_result.content if rag_result and rag_result.success else "Информация не найдена в документах"
@@ -456,16 +450,16 @@ class MultiAgentManager:
                 all_sources.extend(logs_result.sources)
             
             final_answer = response.content + "\n\n*Использованы данные из документов и логов*"
-            state["final_answer"] = final_answer
-            state["sources"] = list(set(all_sources))  # Убираем дубликаты
+            state.final_answer = final_answer
+            state.sources = list(set(all_sources))  # Убираем дубликаты
             
             # Заменяем индикатор загрузки на финальный ответ
-            if state.get("ui_history") is not None:
-                ui_history = state["ui_history"].copy()
+            if state.ui_history is not None:
+                ui_history = state.ui_history.copy()
                 # Заменяем индикатор загрузки на финальный ответ
                 if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Интеграция результатов":
                     ui_history[-1] = {"role": "assistant", "content": final_answer}
-                state["ui_history"] = ui_history
+                state.ui_history = ui_history
             
             logger.info("Интеграция результатов завершена")
             return state
@@ -473,15 +467,15 @@ class MultiAgentManager:
         except Exception as e:
             logger.error(f"Ошибка интеграции: {e}")
             # Возвращаем лучший доступный результат
-            if state.get("rag_result") and state["rag_result"].success:
-                state["final_answer"] = state["rag_result"].content
-                state["sources"] = state["rag_result"].sources
-            elif state.get("logs_result") and state["logs_result"].success:
-                state["final_answer"] = state["logs_result"].content
-                state["sources"] = state["logs_result"].sources
+            if state.rag_result and state.rag_result.success:
+                state.final_answer = state.rag_result.content
+                state.sources = state.rag_result.sources
+            elif state.logs_result and state.logs_result.success:
+                state.final_answer = state.logs_result.content
+                state.sources = state.logs_result.sources
             else:
-                state["final_answer"] = "Не удалось получить информацию из доступных источников"
-                state["sources"] = []
+                state.final_answer = "Не удалось получить информацию из доступных источников"
+                state.sources = []
             
             return state
 
@@ -524,10 +518,10 @@ class MultiAgentManager:
             }
             
             # Выполнение workflow с потоковой передачей
-            config = {"configurable": {"thread_id": thread_id}}
+            config = RunnableConfig(configurable={"thread_id": thread_id})
             
             # Используем stream вместо invoke для получения промежуточных результатов
-            for chunk in self.graph.stream(initial_state, config):
+            for chunk in self.graph.stream(initial_state, config):  #  type: ignore
                 # chunk содержит результаты каждого шага
                 node_name = list(chunk.keys())[0]
                 node_state = chunk[node_name]
