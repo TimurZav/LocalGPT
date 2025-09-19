@@ -1,6 +1,6 @@
 """
 Многоагентная система для обработки гибридных запросов RAG + Logs
-Использует LangGraph для оркестрации агентов
+Использует LangGraph для оркестрации агентов с LangSmith мониторингом
 """
 import logging
 import tempfile
@@ -14,6 +14,9 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.prompts import ChatPromptTemplate
 from typing import Dict, List, Any, Optional, TypedDict, Annotated, Generator
+
+# LangSmith интеграция
+from langsmith_config import trace_agent, trace_function, is_tracing_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +266,7 @@ class MultiAgentManager:
             state["ui_history"] = ui_history
         return state
 
+    @trace_agent("RAG_Agent")
     def _run_rag_agent(self, state: GraphState) -> GraphState:
         """Выполнение RAG агента для поиска по документах"""
         try:
@@ -333,6 +337,7 @@ class MultiAgentManager:
             )
             return state
 
+    @trace_agent("Logs_Agent")
     def _run_logs_agent(self, state: GraphState) -> GraphState:
         """Выполнение агента логов"""
         try:
@@ -420,6 +425,7 @@ class MultiAgentManager:
             )
             return state
 
+    @trace_agent("Integration_Agent")
     def _integrate_results(self, state: GraphState) -> GraphState:
         """Интеграция результатов"""
         try:
@@ -479,6 +485,7 @@ class MultiAgentManager:
             
             return state
 
+    @trace_function("MultiAgent_Processing")
     def process_query_with_streaming(
         self, 
         query: str, 
@@ -490,6 +497,12 @@ class MultiAgentManager:
         Streaming версия с использованием LangGraph workflow
         """
         try:
+            # Добавляем контекст для LangSmith
+            if is_tracing_enabled():
+                from langsmith import traceable
+                # Логируем начальные метрики
+                logger.info(f"🔍 LangSmith: Starting multi-agent processing for query: {query[:100]}...")
+            
             # Инициализация состояния для workflow  
             initial_state = {
                 "messages": [HumanMessage(content=query)],
@@ -501,7 +514,12 @@ class MultiAgentManager:
                 "logs_result": None,
                 "final_answer": None,
                 "sources": [],
-                "metadata": {},
+                "metadata": {
+                    "query_length": len(query),
+                    "dialog_history_length": len(dialog_history) if dialog_history else 0,
+                    "retrieved_docs_length": len(retrieved_docs),
+                    "thread_id": thread_id
+                },
                 "ui_history": dialog_history.copy() if dialog_history else []
             }
             

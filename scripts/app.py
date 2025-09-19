@@ -22,6 +22,9 @@ from langchain_neo4j import Neo4jVector, Neo4jGraph, GraphCypherQAChain
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 from natasha import MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
 
+# LangSmith интеграция
+from langsmith_config import trace_function, is_tracing_enabled
+
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger: logging.getLogger = get_logger(
@@ -450,6 +453,7 @@ class DocumentManager:
                 valid_documents.append(doc)
         return valid_documents
 
+    @trace_function("Document_Indexing")
     def index_documents(
         self,
         file_paths: List[tempfile.TemporaryFile],
@@ -535,6 +539,7 @@ class DocumentManager:
         except Exception as e:
             logger.error(f"Error deleting documents: {e}")
 
+    @trace_function("Document_Retrieval")
     def retrieve_documents(
         self,
         history: List[dict],
@@ -718,6 +723,7 @@ class DocumentManager:
             logger.error(f"Error during document deletion: {e}")
             return gr.update(choices=[])
     
+    @trace_function("CSV_Logs_Loading")
     def load_csv_logs_from_data(self, request_time: str, match_id: str) -> str:
         """
         Load and filter CSV logs from logs folder based on time range and key fields.
