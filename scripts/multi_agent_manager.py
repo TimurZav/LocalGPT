@@ -197,13 +197,39 @@ class MultiAgentManager:
         return "\n\n".join(formatted_history) if formatted_history else "Нет предыдущих сообщений в диалоге."
 
     @staticmethod
+    def _create_loading_content(emoji: str, text: str) -> str:
+        """Создать контент с анимированным индикатором загрузки"""
+        return f"""
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="animation: spin 1s linear infinite;">{emoji}</div>
+            <span>{text}</span>
+            <div style="display: inline-flex; gap: 2px;">
+                <span style="animation: pulse 1.4s ease-in-out infinite;">.</span>
+                <span style="animation: pulse 1.4s ease-in-out 0.2s infinite;">.</span>
+                <span style="animation: pulse 1.4s ease-in-out 0.4s infinite;">.</span>
+            </div>
+        </div>
+        <style>
+            @keyframes spin {{
+                from {{ transform: rotate(0deg); }}
+                to {{ transform: rotate(360deg); }}
+            }}
+            @keyframes pulse {{
+                0%, 80%, 100% {{ opacity: 0; }}
+                40% {{ opacity: 1; }}
+            }}
+        </style>
+        """
+
+    @staticmethod
     def _show_logs_loading(state: GraphState) -> GraphState:
         """Показать индикатор загрузки для анализа логов"""
         if state.get("ui_history") is not None:
             ui_history = state["ui_history"].copy()
+            loading_content = MultiAgentManager._create_loading_content("🔍", "Анализирую логи системы")
             ui_history.append({
-                "role": "assistant",
-                "content": "🔍 Анализирую логи системы...",
+                "role": "assistant", 
+                "content": loading_content,
                 "metadata": {"title": "⏳ Анализ логов"}
             })
             state["ui_history"] = ui_history
@@ -214,9 +240,10 @@ class MultiAgentManager:
         """Показать индикатор загрузки для поиска в документах"""
         if state.get("ui_history") is not None:
             ui_history = state["ui_history"].copy()
+            loading_content = MultiAgentManager._create_loading_content("📚", "Ищу информацию в документах")
             ui_history.append({
                 "role": "assistant",
-                "content": "📚 Ищу информацию в документах...",
+                "content": loading_content,
                 "metadata": {"title": "⏳ Поиск в документах"}
             })
             state["ui_history"] = ui_history
@@ -227,9 +254,10 @@ class MultiAgentManager:
         """Показать индикатор загрузки для интеграции результатов"""
         if state.get("ui_history") is not None:
             ui_history = state["ui_history"].copy()
+            loading_content = MultiAgentManager._create_loading_content("🔗", "Интегрирую результаты и создаю финальный ответ")
             ui_history.append({
                 "role": "assistant",
-                "content": "🔗 Интегрирую результаты и создаю финальный ответ...",
+                "content": loading_content,
                 "metadata": {"title": "⏳ Интеграция результатов"}
             })
             state["ui_history"] = ui_history
@@ -279,7 +307,7 @@ class MultiAgentManager:
             state["rag_result"] = rag_result
             
             # Заменяем индикатор загрузки на результат
-            if state.get("ui_history") is not None and rag_result.success:
+            if state.get("ui_history") is not None:
                 ui_history = state["ui_history"].copy()
                 # Заменяем индикатор загрузки на результат
                 if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Поиск в документах":
@@ -366,7 +394,7 @@ class MultiAgentManager:
             state["logs_result"] = logs_result
             
             # Заменяем индикатор загрузки на результат
-            if state.get("ui_history") is not None and logs_result.success:
+            if state.get("ui_history") is not None:
                 ui_history = state["ui_history"].copy()
                 # Заменяем индикатор загрузки на результат
                 if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Анализ логов":
