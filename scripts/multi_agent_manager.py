@@ -13,7 +13,7 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.prompts import ChatPromptTemplate
-from typing import Dict, List, Any, Optional, TypedDict, Annotated
+from typing import Dict, List, Any, Optional, TypedDict, Annotated, Generator
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,8 @@ class GraphState(TypedDict):
     final_answer: Optional[str]
     sources: List[str]
     metadata: Dict[str, Any]
+    # Новые поля для streaming
+    ui_history: Optional[List[dict]]  # История для UI с метаданными
 
 class MultiAgentManager:
     """Менеджер многоагентной системы"""
@@ -202,7 +204,7 @@ class MultiAgentManager:
         try:
             query = state["original_query"]
             dialog_history = self._format_dialog_history(state.get("dialog_history"))
-            
+
             # Получение контекста из документов через переданные retrieved_docs
             rag_context = state.get("retrieved_docs", "")
             sources = ["documents"]  # Общий источник для переданных документов
@@ -237,8 +239,19 @@ class MultiAgentManager:
                     sources=sources,
                     metadata={"context_length": len(rag_context), "sources_count": len(sources)}
                 )
-            
+
             state["rag_result"] = rag_result
+            
+            # Добавляем результат в UI
+            if state.get("ui_history") is not None and rag_result.success:
+                ui_history = state["ui_history"].copy()
+                ui_history.append({
+                    "role": "assistant",
+                    "content": rag_result.content[:200] + "..." if len(rag_result.content) > 200 else rag_result.content,
+                    "metadata": {"title": "📚 Результат поиска в документах"}
+                })
+                state["ui_history"] = ui_history
+            
             logger.info(f"RAG агент завершен: success={rag_result.success}")
             return state
             
@@ -313,6 +326,17 @@ class MultiAgentManager:
                 )
             
             state["logs_result"] = logs_result
+            
+            # Добавляем результат в UI
+            if state.get("ui_history") is not None and logs_result.success:
+                ui_history = state["ui_history"].copy()
+                ui_history.append({
+                    "role": "assistant",
+                    "content": logs_result.content[:200] + "..." if len(logs_result.content) > 200 else logs_result.content,
+                    "metadata": {"title": "📊 Результат анализа логов"}
+                })
+                state["ui_history"] = ui_history
+            
             logger.info(f"Агент логов завершен: success={logs_result.success}, processed {len(self.document_manager.log_entries) if self.document_manager.log_entries else 0} logs")
             return state
             
@@ -335,7 +359,7 @@ class MultiAgentManager:
             dialog_history = self._format_dialog_history(state.get("dialog_history"))
             rag_result = state.get("rag_result")
             logs_result = state.get("logs_result")
-            
+
             # Подготовка результатов для интеграции
             rag_content = rag_result.content if rag_result and rag_result.success else "Информация не найдена в документах"
             logs_content = logs_result.content if logs_result and logs_result.success else "Информация не найдена в логах"
@@ -357,8 +381,15 @@ class MultiAgentManager:
             if logs_result and logs_result.success:
                 all_sources.extend(logs_result.sources)
             
-            state["final_answer"] = response.content
+            final_answer = response.content + "\n\n*Использованы данные из документов и логов*"
+            state["final_answer"] = final_answer
             state["sources"] = list(set(all_sources))  # Убираем дубликаты
+            
+            # Добавляем финальный ответ в UI
+            if state.get("ui_history") is not None:
+                ui_history = state["ui_history"].copy()
+                ui_history.append({"role": "assistant", "content": final_answer})
+                state["ui_history"] = ui_history
             
             logger.info("Интеграция результатов завершена")
             return state
@@ -378,12 +409,18 @@ class MultiAgentManager:
             
             return state
 
-
-
-    async def process_query(self, query: str, dialog_history: Optional[List[dict]] = None, thread_id: str = "default", retrieved_docs: str = "") -> Dict[str, Any]:
-        """Основной метод обработки запроса"""
+    def process_query_with_streaming(
+        self, 
+        query: str, 
+        dialog_history: Optional[List[dict]] = None,
+        thread_id: str = "default",
+        retrieved_docs: str = ""
+    ) -> Generator[List[dict], None, None]:
+        """
+        Streaming версия с использованием LangGraph workflow
+        """
         try:
-            # Инициализация состояния
+            # Инициализация состояния для workflow  
             initial_state = {
                 "messages": [HumanMessage(content=query)],
                 "original_query": query,
@@ -394,72 +431,29 @@ class MultiAgentManager:
                 "logs_result": None,
                 "final_answer": None,
                 "sources": [],
-                "metadata": {}
+                "metadata": {},
+                "ui_history": dialog_history.copy() if dialog_history else []
             }
             
-            # Выполнение графа
+            # Выполнение workflow с потоковой передачей
             config = {"configurable": {"thread_id": thread_id}}
-            final_state = await self.graph.ainvoke(initial_state, config)
             
-            # Формирование результата
-            return {
-                "answer": final_state.get("final_answer", "Ответ не получен"),
-                "sources": final_state.get("sources", []),
-                "query_type": final_state.get("query_type", "unknown"),
-                "rag_result": final_state.get("rag_result"),
-                "logs_result": final_state.get("logs_result"),
-                "metadata": final_state.get("metadata", {})
-            }
+            # Используем stream вместо invoke для получения промежуточных результатов
+            for chunk in self.graph.stream(initial_state, config):
+                # chunk содержит результаты каждого шага
+                node_name = list(chunk.keys())[0]
+                node_state = chunk[node_name]
+                
+                # Получаем обновленную историю UI из состояния узла
+                if "ui_history" in node_state:
+                    yield node_state["ui_history"]
             
         except Exception as e:
-            logger.error(f"Ошибка обработки запроса: {e}")
-            return {
-                "answer": f"Произошла ошибка при обработке запроса: {str(e)}",
-                "sources": [],
-                "query_type": "error",
-                "rag_result": None,
-                "logs_result": None,
-                "metadata": {"error": str(e)}
-            }
-
-    def process_query_sync(self, query: str, dialog_history: Optional[List[dict]] = None, thread_id: str = "default", retrieved_docs: str = "") -> Dict[str, Any]:
-        """Синхронная версия обработки запроса"""
-        try:
-            # Инициализация состояния
-            initial_state = {
-                "messages": [HumanMessage(content=query)],
-                "original_query": query,
-                "dialog_history": dialog_history,
-                "retrieved_docs": retrieved_docs,
-                "query_type": "",
-                "rag_result": None,
-                "logs_result": None,
-                "final_answer": None,
-                "sources": [],
-                "metadata": {}
-            }
-            
-            # Выполнение графа синхронно
-            config = {"configurable": {"thread_id": thread_id}}
-            final_state = self.graph.invoke(initial_state, config)
-            
-            # Формирование результата
-            return {
-                "answer": final_state.get("final_answer", "Ответ не получен"),
-                "sources": final_state.get("sources", []),
-                "query_type": final_state.get("query_type", "unknown"),
-                "rag_result": final_state.get("rag_result"),
-                "logs_result": final_state.get("logs_result"),
-                "metadata": final_state.get("metadata", {})
-            }
-            
-        except Exception as e:
-            logger.error(f"Ошибка обработки запроса: {e}")
-            return {
-                "answer": f"Произошла ошибка при обработке запроса: {str(e)}",
-                "sources": [],
-                "query_type": "error", 
-                "rag_result": None,
-                "logs_result": None,
-                "metadata": {"error": str(e)}
-            }
+            logger.error(f"Ошибка в workflow streaming: {e}")
+            error_history = (dialog_history.copy() if dialog_history else [])
+            error_history.append({
+                "role": "assistant",
+                "content": f"Произошла ошибка: {str(e)}",
+                "metadata": {"title": "❌ Ошибка"}
+            })
+            yield error_history

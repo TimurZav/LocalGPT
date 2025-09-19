@@ -17,7 +17,7 @@ from langchain.docstore.document import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from typing import List, Optional, Tuple, AsyncGenerator, Union
+from typing import List, Optional, Tuple, Generator, Union
 from langchain_neo4j import Neo4jVector, Neo4jGraph, GraphCypherQAChain
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 from natasha import MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
@@ -1130,7 +1130,7 @@ class ModelManager:
             if self.multi_agent_manager:
                 self.multi_agent_manager.update_model(model_name)
 
-    async def generate_response_stream(
+    def generate_response_stream(
         self,
         model: str,
         history: List[dict],
@@ -1138,7 +1138,7 @@ class ModelManager:
         retrieved_docs: str,
         is_use_tools: bool,
         uid: str
-    ) -> AsyncGenerator[list[dict], None]:
+    ):
         """
         Generates a response using multi-agent system or traditional approach.
 
@@ -1157,19 +1157,64 @@ class ModelManager:
 
         logger.info(f"Beginning response generation [uid - {uid}]")
 
-        # Use log-based approach
-        logger.info(f"Using log-based RAG approach [uid - {uid}]")
-        response_text, _ = await self._log_based_approach(
-            history, mode, retrieved_docs, uid, model, is_use_tools
-        )
-
-        logger.info(f"Response generation completed [uid - {uid}]")
-        history.append({"role": "assistant", "content": response_text})
-        yield history
+        # Use multi-agent approach with real-time updates
+        if is_use_tools and self.multi_agent_manager:
+            logger.info(f"Using multi-agent system with real-time updates [uid - {uid}]")
+            
+            # Get the last user message for processing
+            last_user_message = history[-1].get("content", "") if history else ""
+            
+            # Update model in multi-agent system
+            self.update_model(model)
+            self.multi_agent_manager.update_model(model)
+            
+            try:
+                # Use the new streaming method from multi_agent_manager
+                streaming_generator = self.multi_agent_manager.process_query_with_streaming(
+                    query=last_user_message,
+                    dialog_history=history,
+                    thread_id=uid,
+                    retrieved_docs=retrieved_docs
+                )
+                
+                # Yield each step from the multi-agent streaming
+                for updated_history in streaming_generator:
+                    yield updated_history
+                    
+                logger.info(f"Multi-agent streaming completed [uid - {uid}]")
+                
+            except Exception as e:
+                logger.error(f"Multi-agent streaming error: {e}")
+                error_history = history.copy()
+                error_history.append({
+                    "role": "assistant",
+                    "content": f"Произошла ошибка в многоагентной системе: {str(e)}",
+                    "metadata": {"title": "❌ Ошибка многоагентной системы"}
+                })
+                yield error_history
+            
+        else:
+            # Simple approach fallback
+            logger.info(f"Using simple approach [uid - {uid}]")
+            history_copy = history.copy()
+            history_copy.append({
+                "role": "assistant",
+                "content": "Обрабатываю запрос...",
+                "metadata": {"title": "⚡ Быстрый ответ"}
+            })
+            yield history_copy
+            
+            response_text, _ = self._log_based_approach(
+                history, mode, retrieved_docs, uid, model, is_use_tools
+            )
+            
+            history_final = history.copy()
+            history_final.append({"role": "assistant", "content": response_text})
+            yield history_final
         
         self.message_manager.queue -= 1
 
-    async def _log_based_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str, model: str, use_log_search: bool) -> tuple[str, list]:
+    def _log_based_approach(self, history: List[dict], mode: str, retrieved_docs: str, uid: str, model: str, use_log_search: bool) -> tuple[str, list]:
         """Use MultiAgentManager for hybrid RAG+Logs approach"""
         
         # Update model if changed
