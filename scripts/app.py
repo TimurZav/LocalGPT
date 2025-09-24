@@ -1077,7 +1077,7 @@ class ModelManager:
             streaming_generator = self.multi_agent_manager.process_query_with_streaming(
                 query=last_user_message,
                 dialog_history=history,
-                thread_id=uid,
+                # thread_id=uid,
                 retrieved_docs=retrieved_docs
             )
 

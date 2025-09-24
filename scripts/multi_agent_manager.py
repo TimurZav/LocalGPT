@@ -1,21 +1,18 @@
 """
 Многоагентная система для обработки гибридных запросов RAG + Logs
-Использует LangGraph для оркестрации агентов с LangSmith мониторингом
+Использует Semantic Kernel ChatCompletionAgent для оркестрации агентов
 """
 import os
 import logging
-import tempfile
-from pydantic import BaseModel
+import asyncio
 from dataclasses import dataclass
 from claude_code_llm import ClaudeCodeLLM
-from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
-from langchain_core.messages import HumanMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.prompts import ChatPromptTemplate
-from typing import Dict, List, Any, Optional, Annotated, Generator
-from langsmith_config import trace_agent, trace_function, is_tracing_enabled
+from typing import Dict, List, Any, Optional, Generator
+from langsmith_config import trace_function, is_tracing_enabled
+
+# Semantic Kernel imports
+from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+from semantic_kernel.agents import ChatCompletionAgent, ChatHistoryAgentThread
 
 logger = logging.getLogger(__name__)
 
@@ -31,146 +28,123 @@ class AgentResult:
     error: Optional[str] = None
 
 
-class GraphState(BaseModel):
-    """Состояние графа агентов"""
-    messages: Annotated[List, add_messages]
-    original_query: str
-    dialog_history: Optional[List[dict]]  # История диалога для контекста
-    retrieved_docs: str  # Документы, полученные из UI
-    query_type: str
-    rag_result: Optional[AgentResult]
-    logs_result: Optional[AgentResult]
-    final_answer: Optional[str]
-    sources: List[str]
-    metadata: Dict[str, Any]
-    # Новые поля для streaming
-    ui_history: Optional[List[dict]]  # История для UI с метаданными
-
 class MultiAgentManager:
-    """Менеджер многоагентной системы"""
+    """Менеджер многоагентной системы на основе Semantic Kernel ChatCompletionAgent"""
     
     def __init__(self, document_manager, model_name: str = "claude-3-5-sonnet-20241022"):
         self.document_manager = document_manager
         self.model_name = model_name
         self.llm = ClaudeCodeLLM(model_name=model_name)
         
-        # Создание графа агентов
-        self.graph = self._create_agent_graph()
+        # Агенты будут созданы при первом запросе
+        self.logs_agent = self._create_logs_agent()
+        self.rag_agent = self._create_rag_agent()
+        self.integration_agent = self._create_integration_agent()
+        self.thread = self._create_thread()  # ChatHistoryAgentThread для управления диалогом
         
-        # Промпты (классификатор больше не нужен, всегда используем HYBRID)
-        
-        self.rag_agent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Ты GraphRAG агент, работающий с Neo4j графовой базой данных. Создай КРАТКУЮ ВЫЖИМКУ из документов и связей между ними.
-
-            Инструкции:
-            1. Найди в чанках информацию, которая объясняет события из логов
+        # Текущее состояние обработки
+        self.current_query = None
+        self.current_dialog_history = None
+        self.current_retrieved_docs = None
+        self.ui_history = []
+    
+    @staticmethod
+    def _create_chat_completion_service():
+        """Создание chat completion service для агентов"""
+        try:
+            # Пробуем добавить сервис, если есть ключи
+            api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+            if api_key:
+                service = OpenAIChatCompletion(
+                    ai_model_id="gpt-4o-mini",  # fallback модель
+                    api_key=api_key,
+                )
+                logger.info("✅ Chat completion service настроен с OpenAI API")
+                return service
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось настроить API: {e}")
+            raise Exception("No valid API service available")
+    
+    def _create_logs_agent(self) -> ChatCompletionAgent:
+        """Создание агента анализа логов"""
+        return ChatCompletionAgent(
+            service=self._create_chat_completion_service(),
+            name="LogsAnalyst",
+            instructions="""Ты агент анализа логов. Анализируй предоставленные логи системы.
+            
+            Задачи:
+            1. Найди паттерны, ошибки, события, связанные с вопросом пользователя
+            2. Группируй похожие события
+            3. Указывай временные метки для важных событий
+            4. Предоставляй детальную статистику
+            5. Учитывай контекст предыдущих сообщений
+            
+            Если в логах нет информации для ответа, четко об этом сообщи.
+            Будь аналитическим и полезным."""
+        )
+    
+    def _create_rag_agent(self) -> ChatCompletionAgent:
+        """Создание RAG агента для работы с документами"""
+        return ChatCompletionAgent(
+            service=self._create_chat_completion_service(),
+            name="DocumentAnalyst", 
+            instructions="""Ты GraphRAG агент для анализа документов и графовых связей.
+            
+            Задачи:
+            1. Анализируй документы и связи между ними
             2. Ищи теоретическую информацию о механиках, правилах, ограничениях
-            3. Включи информацию о наградах, героях, механиках игры
-            4. ОСОБОЕ ВНИМАНИЕ: ищи информацию о сохранениях, синхронизации данных, потере прогресса
-            5. Укажи источники для каждого факта
-            6. Если есть результат анализа логов - найди документацию, которая это объясняет
-            7. Формат: краткие пункты с объяснениями и контекстом
-            8. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов из истории диалога
+            3. Находи информацию о сохранениях, синхронизации данных, потере прогресса
+            4. Связывай документацию с событиями из логов
+            5. Указывай источники для каждого факта
+            6. Учитывай контекст диалога
             
-            Цель: дополнить практические данные из логов теоретическими знаниями."""),
-            ("human", "История диалога:\n{dialog_history}\n\nКонтекст из документов и графовых связей:\n{context}\n\nРезультат анализа логов:\n{logs_result}\n\nТекущий вопрос: {query}")
-        ])
-        
-        self.logs_agent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Ты агент анализа логов. Тебе предоставлены логи системы для анализа.
-            
-            Инструкции:
-            1. Анализируй все предоставленные логи полностью
-            2. Ищи паттерны, ошибки, события, связанные с вопросом пользователя
-            3. Группируй похожие события вместе
-            4. Указывай временные метки для важных событий
-            5. Если в логах нет информации для ответа, так и скажи
-            6. Предоставляй детальный анализ со статистикой, если возможно
-            7. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов из истории диалога
-            
-            Будь максимально полезным и аналитическим."""),
-            ("human", "История диалога:\n{dialog_history}\n\nЛоги системы:\n{logs}\n\nТекущий вопрос для анализа: {query}")
-        ])
-        
-        self.integration_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Ты интеграционный агент. Твоя задача - создать полный и связный ответ, объединив:
-            1. Результат Neo4j GraphRAG поиска по документам (релевантные чанки и графовые связи)
-            2. Результат анализа всех логов системы
-            3. Контекст предыдущего диалога для непрерывности разговора
+            Формат: краткие пункты с объяснениями.
+            Цель: дополнить данные из логов теоретическими знаниями."""
+        )
+    
+    def _create_integration_agent(self) -> ChatCompletionAgent:
+        """Создание интеграционного агента"""
+        return ChatCompletionAgent(
+            service=self._create_chat_completion_service(),
+            name="IntegrationSpecialist",
+            instructions="""Ты интеграционный агент. Создавай полные ответы, объединяя:
+            1. Результаты анализа логов
+            2. Информацию из документов
+            3. Контекст предыдущего диалога
 
-            Правила интеграции:
-            1. Сначала используй информацию из документов для теоретической части ответа
-            2. Затем дополни практической информацией из логов (события, ошибки, статистика)
-            3. Создай связный нарратив, объединив оба источника
-            4. Если результаты противоречат друг другу, укажи это и объясни различия
-            5. Если один источник не содержит информации, полноценно используй другой
-            6. Всегда указывай, откуда взята информация
-            7. ВАЖНО: Учитывай контекст предыдущих вопросов и ответов для логичности диалога
-            8. Ссылайся на предыдущие ответы, если текущий вопрос связан с ними
+            Правила:
+            1. Используй документы для теоретической части
+            2. Дополняй практической информацией из логов
+            3. Создавай связный нарратив
+            4. При противоречиях объясняй различия
+            5. Указывай источники информации
+            6. Ссылайся на предыдущие ответы при необходимости
 
             Структура ответа:
-            [Основной интегрированный ответ с использованием обоих источников и контекста диалога]
+            [Основной интегрированный ответ]
             
             ## Источники данных
-            - Документы: [список файлов, если есть]
-            - Системные логи: [краткая характеристика логов]"""),
-            ("human", """История диалога:
-            {dialog_history}
-
-            Текущий вопрос пользователя: {query}
-
-            Информация из документов (GraphRAG):
-            {rag_result}
-
-            Информация из логов системы:  
-            {logs_result}
-
-            Создай интегрированный ответ, объединив всю информацию и учитывая контекст диалога.""")
-        ])
-
-
-    def _create_agent_graph(self):
-        """Создание графа агентов"""
-        workflow = StateGraph(GraphState)
-        
-        # Добавление узлов с индикаторами загрузки
-        workflow.add_node("logs_loading", self._show_logs_loading)
-        workflow.add_node("logs_agent", self._run_logs_agent)
-        workflow.add_node("rag_loading", self._show_rag_loading)
-        workflow.add_node("rag_agent", self._run_rag_agent)
-        workflow.add_node("integration_loading", self._show_integration_loading)
-        workflow.add_node("integrator", self._integrate_results)
-        
-        # Определение маршрутов - цепочка с индикаторами
-        workflow.set_entry_point("logs_loading")
-        workflow.add_edge("logs_loading", "logs_agent")
-        workflow.add_edge("logs_agent", "rag_loading")
-        workflow.add_edge("rag_loading", "rag_agent")
-        workflow.add_edge("rag_agent", "integration_loading")
-        workflow.add_edge("integration_loading", "integrator")
-        workflow.add_edge("integrator", END)
-        
-        return workflow.compile(checkpointer=MemorySaver())
-
-    def update_model(self, model_name: str):
-        """Обновление модели для всех агентов"""
-        if model_name != self.model_name:
-            self.model_name = model_name
-            self.llm = ClaudeCodeLLM(model_name=model_name)
-            logger.info(f"Multi-agent system updated to use model: {model_name}")
-
+            - Документы: [если есть]
+            - Системные логи: [характеристика]"""
+        )
+    
     @staticmethod
-    def _format_dialog_history(dialog_history: Optional[List[dict]]) -> str:
-        """Форматирование истории диалога для промптов"""
-        if not dialog_history or len(dialog_history) < 2:  # type: ignore
+    def _create_thread() -> ChatHistoryAgentThread:
+        """Создание thread для управления диалогом между агентами"""
+        return ChatHistoryAgentThread()
+    
+    @staticmethod
+    def _format_dialog_history(dialog_history) -> str:
+        """Форматирование истории диалога"""
+        if not dialog_history or len(dialog_history) < 2:
             return "Нет предыдущих сообщений в диалоге."
         
-        # Берем последние несколько пар вопрос-ответ (максимум 3 пары)
+        # Берем последние 3 пары вопрос-ответ
         max_pairs = 3
         formatted_history = []
         
-        # Исключаем последнее сообщение пользователя (это текущий вопрос)
-        history_to_process = dialog_history[:-1]  # type: ignore
+        # Исключаем последнее сообщение пользователя (текущий вопрос)
+        history_to_process = dialog_history[:-1]
         
         # Группируем по парам user -> assistant
         pairs = []
@@ -187,348 +161,332 @@ class MultiAgentManager:
         if current_pair.get("user") and current_pair.get("assistant"):
             pairs.append(current_pair)
         
-        # Берем последние пары и форматируем
+        # Форматируем последние пары
         recent_pairs = pairs[-max_pairs:] if len(pairs) > max_pairs else pairs
         
         for i, pair in enumerate(recent_pairs, 1):
             formatted_history.append(f"Вопрос {i}: {pair['user']}")
-            formatted_history.append(f"Ответ {i}: {pair['assistant'][:200]}...")  # Обрезаем длинные ответы
+            formatted_history.append(f"Ответ {i}: {pair['assistant'][:200]}...")
         
         return "\n\n".join(formatted_history) if formatted_history else "Нет предыдущих сообщений в диалоге."
+    
+    def _prepare_context_message(self, query, dialog_history, retrieved_docs) -> str:
+        """Подготовка контекстного сообщения для агентов"""
+        formatted_history = self._format_dialog_history(dialog_history)
+        
+        # Подготовка логов
+        if self.document_manager.log_entries:
+            logs_count = len(self.document_manager.log_entries)
+            logs_sample = "\n".join(self.document_manager.log_entries[:5])  # Первые 5 записей как пример
+            logs_info = f"Доступно {logs_count} записей логов. Пример:\n{logs_sample}\n[...остальные {logs_count-5} записей]"
+        else:
+            logs_info = "Логи не загружены в систему"
+        
+        # Формирование полного контекста
+        context_message = f"""
+КОНТЕКСТ ЗАПРОСА:
 
-    @staticmethod
-    def _create_loading_content(emoji: str, text: str) -> str:
-        """Создать контент с анимированным индикатором загрузки"""
-        return f"""
-        <div style="display: flex; align-items: center; gap: 8px;">
-            <div style="animation: spin 1s linear infinite;">{emoji}</div>
-            <span>{text}</span>
-            <div style="display: inline-flex; gap: 2px;">
-                <span style="animation: pulse 1.4s ease-in-out infinite;">.</span>
-                <span style="animation: pulse 1.4s ease-in-out 0.2s infinite;">.</span>
-                <span style="animation: pulse 1.4s ease-in-out 0.4s infinite;">.</span>
-            </div>
-        </div>
-        <style>
-            @keyframes spin {{
-                from {{ transform: rotate(0deg); }}
-                to {{ transform: rotate(360deg); }}
-            }}
-            @keyframes pulse {{
-                0%, 80%, 100% {{ opacity: 0; }}
-                40% {{ opacity: 1; }}
-            }}
-        </style>
-        """
+История диалога:
+{formatted_history}
 
-    @staticmethod
-    def _show_logs_loading(state: GraphState) -> GraphState:
-        """Показать индикатор загрузки для анализа логов"""
-        if state.ui_history is not None:
-            ui_history = state.ui_history.copy()
-            loading_content = MultiAgentManager._create_loading_content("🔍", "Анализирую логи системы")
-            ui_history.append({
+Системные логи:
+{logs_info}
+
+Документы и графовые связи:
+{retrieved_docs if retrieved_docs else "Документы не предоставлены"}
+
+ТЕКУЩИЙ ВОПРОС ПОЛЬЗОВАТЕЛЯ:
+{query}
+
+Проанализируйте информацию согласно вашей роли и предоставьте результат.
+"""
+        return context_message
+    
+    def _prepare_logs_context(self, query: str, dialog_history) -> str:
+        """Подготовка контекста для LogsAnalyst - только логи и история диалога"""
+        formatted_history = self._format_dialog_history(dialog_history)
+        
+        # Подготовка логов
+        if self.document_manager.log_entries:
+            logs_count = len(self.document_manager.log_entries)
+            # Для агента логов даем полную информацию о логах
+            if logs_count <= 10:
+                logs_info = "\n".join(self.document_manager.log_entries)
+            else:
+                # Если логов много, берем первые 10 и последние 5
+                first_logs = "\n".join(self.document_manager.log_entries[:10])
+                last_logs = "\n".join(self.document_manager.log_entries[-5:])
+                logs_info = f"{first_logs}\n\n[...пропущено {logs_count-15} записей...]\n\n{last_logs}"
+        else:
+            logs_info = "Логи не загружены в систему"
+        
+        context_message = f"""
+АНАЛИЗ ЛОГОВ СИСТЕМЫ:
+
+История диалога:
+{formatted_history}
+
+СИСТЕМНЫЕ ЛОГИ:
+{logs_info}
+
+ВОПРОС ПОЛЬЗОВАТЕЛЯ:
+{query}
+
+Проанализируй логи и найди информацию, связанную с вопросом пользователя. Сосредоточься на:
+- Паттернах и ошибках в логах
+- Временных метках важных событий
+- Статистике и группировке событий
+- Связи событий с вопросом пользователя
+"""
+        return context_message
+    
+    def _prepare_documents_context(self, query: str, dialog_history, retrieved_docs: str) -> str:
+        """Подготовка контекста для DocumentAnalyst - только документы и история диалога"""
+        formatted_history = self._format_dialog_history(dialog_history)
+        
+        context_message = f"""
+АНАЛИЗ ДОКУМЕНТОВ И ЗНАНИЙ:
+
+История диалога:
+{formatted_history}
+
+ДОКУМЕНТЫ И ГРАФОВЫЕ СВЯЗИ:
+{retrieved_docs if retrieved_docs else "Документы не предоставлены"}
+
+ВОПРОС ПОЛЬЗОВАТЕЛЯ:
+{query}
+
+Проанализируй документы и найди теоретическую информацию, связанную с вопросом пользователя. Сосредоточься на:
+- Механиках, правилах и ограничениях
+- Информации о сохранениях и синхронизации данных
+- Связях между различными компонентами системы
+- Источниках каждого факта
+"""
+        return context_message
+    
+    def _prepare_integration_context(self, query: str, dialog_history, logs_analysis: str, docs_analysis: str) -> str:
+        """Подготовка контекста для IntegrationSpecialist - результаты от других агентов"""
+        formatted_history = self._format_dialog_history(dialog_history)
+        
+        context_message = f"""
+ИНТЕГРАЦИЯ РЕЗУЛЬТАТОВ:
+
+История диалога:
+{formatted_history}
+
+РЕЗУЛЬТАТЫ АНАЛИЗА ЛОГОВ:
+{logs_analysis}
+
+РЕЗУЛЬТАТЫ АНАЛИЗА ДОКУМЕНТОВ:
+{docs_analysis}
+
+ВОПРОС ПОЛЬЗОВАТЕЛЯ:
+{query}
+
+Создай полный ответ, объединяя результаты анализа логов и документов. Сосредоточься на:
+- Создании связного нарратива
+- Объяснении противоречий, если они есть
+- Указании источников информации
+- Ссылках на предыдущие ответы при необходимости
+"""
+        return context_message
+    
+    async def _execute_agent_workflow(
+        self, 
+        query: str, 
+        dialog_history = None,
+        retrieved_docs: str = ""
+    ) -> Dict[str, Any]:
+        """Выполнение workflow агентов с новым подходом"""
+        try:
+            # Сохранение текущих параметров
+            self.current_query = query
+            self.current_dialog_history = dialog_history
+            self.current_retrieved_docs = retrieved_docs
+            self.ui_history = dialog_history.copy() if dialog_history else []
+            
+            # Старый общий контекст больше не используется - теперь каждый агент получает специализированный контекст
+            
+            # Выполняем новый workflow с invoke_stream
+            return await self._execute_new_workflow(query, dialog_history, retrieved_docs)
+            
+        except Exception as e:
+            logger.error(f"Ошибка в workflow агентов: {e}")
+            return {
+                "final_answer": f"Произошла ошибка: {str(e)}",
+                "sources": [],
+                "ui_history": self.ui_history,
+                "error": str(e)
+            }
+    
+    async def _execute_new_workflow(self, query: str, dialog_history, retrieved_docs: str) -> Dict[str, Any]:
+        """Новый workflow с использованием invoke_stream и специализированных контекстов"""
+        logger.info("🚀 Выполнение нового workflow со специализированными контекстами")
+        
+        final_response = ""
+        logs_analysis = ""
+        docs_analysis = ""
+        
+        # Шаг 1: LogsAnalyst - анализ только логов
+        try:
+            logger.info("🤖 Запуск агента: LogsAnalyst")
+            logs_context = self._prepare_logs_context(query, dialog_history)
+            
+            full_response = []
+            async for response in self.logs_agent.invoke_stream(
+                messages=logs_context,
+                thread=self.thread,
+            ):
+                self.thread = response.thread
+                content_items = list(response.items)
+                for item in content_items:
+                    if hasattr(item, 'text') and item.text:
+                        full_response.append(item.text)
+            
+            logs_analysis = ''.join(full_response)
+            logger.info(f"✅ LogsAnalyst: {logs_analysis[:100]}...")
+            
+            self.ui_history.append({
+                "role": "assistant",
+                "content": logs_analysis,
+                "metadata": {"agent": "LogsAnalyst", "title": "🗂️ Анализ логов"}
+            })
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка LogsAnalyst: {e}")
+            logs_analysis = f"Ошибка анализа логов: {str(e)}"
+            self.ui_history.append({
                 "role": "assistant", 
-                "content": loading_content,
-                "metadata": {"title": "⏳ Анализ логов"}
+                "content": logs_analysis,
+                "metadata": {"agent": "LogsAnalyst", "title": "❌ Ошибка анализа логов"}
             })
-            state.ui_history = ui_history
-        return state
-
-    @staticmethod
-    def _show_rag_loading(state: GraphState) -> GraphState:
-        """Показать индикатор загрузки для поиска в документах"""
-        if state.ui_history is not None:
-            ui_history = state.ui_history.copy()
-            loading_content = MultiAgentManager._create_loading_content("📚", "Ищу информацию в документах")
-            ui_history.append({
+        
+        # Шаг 2: DocumentAnalyst - анализ только документов
+        try:
+            logger.info("🤖 Запуск агента: DocumentAnalyst")
+            docs_context = self._prepare_documents_context(query, dialog_history, retrieved_docs)
+            
+            full_response = []
+            async for response in self.rag_agent.invoke_stream(
+                messages=docs_context,
+                thread=self.thread,
+            ):
+                self.thread = response.thread
+                content_items = list(response.items)
+                for item in content_items:
+                    if hasattr(item, 'text') and item.text:
+                        full_response.append(item.text)
+            
+            docs_analysis = ''.join(full_response)
+            logger.info(f"✅ DocumentAnalyst: {docs_analysis[:100]}...")
+            
+            self.ui_history.append({
                 "role": "assistant",
-                "content": loading_content,
-                "metadata": {"title": "⏳ Поиск в документах"}
+                "content": docs_analysis,
+                "metadata": {"agent": "DocumentAnalyst", "title": "📚 Анализ документов"}
             })
-            state.ui_history = ui_history
-        return state
-
-    @staticmethod
-    def _show_integration_loading(state: GraphState) -> GraphState:
-        """Показать индикатор загрузки для интеграции результатов"""
-        if state.ui_history is not None:
-            ui_history = state.ui_history.copy()
-            loading_content = MultiAgentManager._create_loading_content("🔗", "Интегрирую результаты и создаю финальный ответ")
-            ui_history.append({
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка DocumentAnalyst: {e}")
+            docs_analysis = f"Ошибка анализа документов: {str(e)}"
+            self.ui_history.append({
+                "role": "assistant", 
+                "content": docs_analysis,
+                "metadata": {"agent": "DocumentAnalyst", "title": "❌ Ошибка анализа документов"}
+            })
+        
+        # Шаг 3: IntegrationSpecialist - интеграция результатов
+        try:
+            logger.info("🤖 Запуск агента: IntegrationSpecialist")
+            integration_context = self._prepare_integration_context(query, dialog_history, logs_analysis, docs_analysis)
+            
+            full_response = []
+            async for response in self.integration_agent.invoke_stream(
+                messages=integration_context,
+                thread=self.thread,
+            ):
+                self.thread = response.thread
+                content_items = list(response.items)
+                for item in content_items:
+                    if hasattr(item, 'text') and item.text:
+                        full_response.append(item.text)
+            
+            final_response = ''.join(full_response)
+            logger.info(f"✅ IntegrationSpecialist: {final_response[:100]}...")
+            
+            self.ui_history.append({
                 "role": "assistant",
-                "content": loading_content,
-                "metadata": {"title": "⏳ Интеграция результатов"}
+                "content": final_response,
+                # "metadata": {"agent": "IntegrationSpecialist", "title": "🔗 Интеграция результатов"}
             })
-            state.ui_history = ui_history
-        return state
-
-    @trace_agent("RAG_Agent")
-    def _run_rag_agent(self, state: GraphState) -> GraphState:
-        """Выполнение RAG агента для поиска по документах"""
-        try:
-            query = state.original_query
-            dialog_history = self._format_dialog_history(state.dialog_history)
-
-            # Получение контекста из документов через переданные retrieved_docs
-            rag_context = state.retrieved_docs or ""
-            sources = ["documents"]  # Общий источник для переданных документов
-            
-            if not rag_context:
-                rag_result = AgentResult(
-                    agent_type="rag",
-                    success=False,
-                    content="Информация не найдена в документах",
-                    sources=[],
-                    metadata={"context_length": 0}
-                )
-            else:
-                # Получение результата логов, если есть
-                logs_result = state.logs_result
-                logs_content = logs_result.content if logs_result and logs_result.success else "Анализ логов не выполнен"
-                
-                # Генерация ответа на основе контекста документов + результат логов
-                response = self.llm.invoke(
-                    self.rag_agent_prompt.format_messages(
-                        dialog_history=dialog_history,
-                        context=rag_context,
-                        logs_result=logs_content,
-                        query=query
-                    )
-                )
-                
-                rag_result = AgentResult(
-                    agent_type="rag",
-                    success=True,
-                    content=response.content,
-                    sources=sources,
-                    metadata={"context_length": len(rag_context), "sources_count": len(sources)}
-                )
-
-            state.rag_result = rag_result
-            
-            # Заменяем индикатор загрузки на результат
-            if state.ui_history is not None:
-                ui_history = state.ui_history.copy()
-                # Заменяем индикатор загрузки на результат
-                if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Поиск в документах":
-                    ui_history[-1] = {
-                        "role": "assistant",
-                        "content": rag_result.content[:200] + "..." if len(rag_result.content) > 200 else rag_result.content,
-                        "metadata": {"title": "📚 Результат поиска в документах"}
-                    }
-                state.ui_history = ui_history
-            
-            logger.info(f"RAG агент завершен: success={rag_result.success}")
-            return state
             
         except Exception as e:
-            logger.error(f"Ошибка RAG агента: {e}")
-            state.rag_result = AgentResult(
-                agent_type="rag",
-                success=False,
-                content=f"Ошибка обработки документов: {str(e)}",
-                sources=[],
-                metadata={},
-                error=str(e)
-            )
-            return state
-
-    @trace_agent("Logs_Agent")
-    def _run_logs_agent(self, state: GraphState) -> GraphState:
-        """Выполнение агента логов"""
-        try:
-            query = state.original_query
-            dialog_history = self._format_dialog_history(state.dialog_history)
-            
-            # Получение всех логов
-            if not self.document_manager.log_entries:
-                logs_result = AgentResult(
-                    agent_type="logs",
-                    success=False,
-                    content="Логи не загружены в систему",
-                    sources=[],
-                    metadata={}
-                )
-            else:
-                # # Ограничение логов для избежания ошибки "Argument list too long"
-                # Записываем ВСЕ логи в постоянный файл
-                log_entries = self.document_manager.log_entries
-                all_logs = "\n".join(log_entries)
-                
-                # Создаем временный файл для логов, чтобы обойти ограничение длины аргументов
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as temp_file:
-                    temp_file.write(all_logs)
-                    temp_file_path = temp_file.name
-                    temp_file_path = temp_file.name
-
-                logger.info(f"Обрабатываем {len(log_entries)} записей логов, размер: {len(all_logs)} символов")
-                logger.info(f"Логи сохранены во временный файл: {temp_file_path}")
-
-                response = self.llm.invoke(
-                    self.logs_agent_prompt.format_messages(
-                        dialog_history=dialog_history,
-                        logs=f"ФАЙЛ С ЛОГАМИ: {temp_file_path}\n\nИспользуйте инструмент Read для чтения файла: Read {temp_file_path}",
-                        query=query
-                    )
-                )
-
-                # Удаляем временный файл после использования
-                try:
-                    os.unlink(temp_file_path)
-                    logger.info(f"Временный файл удален: {temp_file_path}")
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить временный файл {temp_file_path}: {e}")
-                
-                logs_result = AgentResult(
-                    agent_type="logs",
-                    success=True,
-                    content=response.content,
-                    sources=["logs"],
-                    metadata={
-                        "total_logs": len(self.document_manager.log_entries)
-                    }
-                )
-            
-            state.logs_result = logs_result
-            
-            # Заменяем индикатор загрузки на результат
-            if state.ui_history is not None:
-                ui_history = state.ui_history.copy()
-                # Заменяем индикатор загрузки на результат
-                if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Анализ логов":
-                    ui_history[-1] = {
-                        "role": "assistant",
-                        "content": logs_result.content[:200] + "..." if len(logs_result.content) > 200 else logs_result.content,
-                        "metadata": {"title": "📊 Результат анализа логов"}
-                    }
-                state.ui_history = ui_history
-            
-            logger.info(f"Агент логов завершен: success={logs_result.success}, processed {len(self.document_manager.log_entries) if self.document_manager.log_entries else 0} logs")
-            return state
-            
-        except Exception as e:
-            logger.error(f"Ошибка агента логов: {e}")
-            state.logs_result = AgentResult(
-                agent_type="logs",
-                success=False,
-                content=f"Ошибка анализа логов: {str(e)}",
-                sources=[],
-                metadata={},
-                error=str(e)
-            )
-            return state
-
-    @trace_agent("Integration_Agent")
-    def _integrate_results(self, state: GraphState) -> GraphState:
-        """Интеграция результатов"""
-        try:
-            query = state.original_query
-            dialog_history = self._format_dialog_history(state.dialog_history)
-            rag_result = state.rag_result
-            logs_result = state.logs_result
-
-            # Подготовка результатов для интеграции
-            rag_content = rag_result.content if rag_result and rag_result.success else "Информация не найдена в документах"
-            logs_content = logs_result.content if logs_result and logs_result.success else "Информация не найдена в логах"
-            
-            # Интеграция результатов
-            response = self.llm.invoke(
-                self.integration_prompt.format_messages(
-                    dialog_history=dialog_history,
-                    query=query,
-                    rag_result=rag_content,
-                    logs_result=logs_content
-                )
-            )
-            
-            # Сбор всех источников
-            all_sources = []
-            if rag_result and rag_result.success:
-                all_sources.extend(rag_result.sources)
-            if logs_result and logs_result.success:
-                all_sources.extend(logs_result.sources)
-            
-            final_answer = response.content + "\n\n*Использованы данные из документов и логов*"
-            state.final_answer = final_answer
-            state.sources = list(set(all_sources))  # Убираем дубликаты
-            
-            # Заменяем индикатор загрузки на финальный ответ
-            if state.ui_history is not None:
-                ui_history = state.ui_history.copy()
-                # Заменяем индикатор загрузки на финальный ответ
-                if ui_history and ui_history[-1].get("metadata", {}).get("title") == "⏳ Интеграция результатов":
-                    ui_history[-1] = {"role": "assistant", "content": final_answer}
-                state.ui_history = ui_history
-            
-            logger.info("Интеграция результатов завершена")
-            return state
-            
-        except Exception as e:
-            logger.error(f"Ошибка интеграции: {e}")
-            # Возвращаем лучший доступный результат
-            if state.rag_result and state.rag_result.success:
-                state.final_answer = state.rag_result.content
-                state.sources = state.rag_result.sources
-            elif state.logs_result and state.logs_result.success:
-                state.final_answer = state.logs_result.content
-                state.sources = state.logs_result.sources
-            else:
-                state.final_answer = "Не удалось получить информацию из доступных источников"
-                state.sources = []
-            
-            return state
-
+            logger.error(f"❌ Ошибка IntegrationSpecialist: {e}")
+            final_response = f"Не удалось интегрировать результаты: {str(e)}"
+            self.ui_history.append({
+                "role": "assistant", 
+                "content": final_response,
+                "metadata": {"agent": "IntegrationSpecialist", "title": "❌ Ошибка интеграции"}
+            })
+        
+        return {
+            "final_answer": final_response,
+            "sources": ["documents", "logs"],
+            "ui_history": self.ui_history,
+            "is_complete": True
+        }
+    
+    def update_model(self, model_name: str):
+        """Обновление модели для всех агентов"""
+        if model_name != self.model_name:
+            self.model_name = model_name
+            self.llm = ClaudeCodeLLM(model_name=model_name)
+            # Сброс агентов для пересоздания с новой моделью
+            self.logs_agent = None
+            self.rag_agent = None
+            self.integration_agent = None
+            self.thread = None
+            logger.info(f"Multi-agent system updated to use model: {model_name}")
+    
     @trace_function("MultiAgent_Processing")
     def process_query_with_streaming(
         self, 
         query: str, 
-        dialog_history: Optional[List[dict]] = None,
-        thread_id: str = "default",
+        dialog_history = None,
         retrieved_docs: str = ""
     ) -> Generator[List[dict], None, None]:
         """
-        Streaming версия с использованием LangGraph workflow
+        Streaming версия с использованием Semantic Kernel AgentGroupChat
         """
         try:
             # Добавляем контекст для LangSmith
             if is_tracing_enabled():
-                from langsmith import traceable
-                # Логируем начальные метрики
                 logger.info(f"🔍 LangSmith: Starting multi-agent processing for query: {query[:100]}...")
             
-            # Инициализация состояния для workflow  
-            initial_state = {
-                "messages": [HumanMessage(content=query)],
-                "original_query": query,
-                "dialog_history": dialog_history,
-                "retrieved_docs": retrieved_docs,
-                "query_type": "",
-                "rag_result": None,
-                "logs_result": None,
-                "final_answer": None,
-                "sources": [],
-                "metadata": {
-                    "query_length": len(query),
-                    "dialog_history_length": len(dialog_history) if dialog_history else 0,
-                    "retrieved_docs_length": len(retrieved_docs),
-                    "thread_id": thread_id
-                },
-                "ui_history": dialog_history.copy() if dialog_history else []
-            }
+            # Выполняем workflow асинхронно
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             
-            # Выполнение workflow с потоковой передачей
-            config = RunnableConfig(configurable={"thread_id": thread_id})
-            
-            # Используем stream вместо invoke для получения промежуточных результатов
-            for chunk in self.graph.stream(initial_state, config):  #  type: ignore
-                # chunk содержит результаты каждого шага
-                node_name = list(chunk.keys())[0]
-                node_state = chunk[node_name]
+            try:
+                workflow_results = loop.run_until_complete(
+                    self._execute_agent_workflow(query, dialog_history, retrieved_docs)
+                )
                 
-                # Получаем обновленную историю UI из состояния узла
-                if "ui_history" in node_state:
-                    yield node_state["ui_history"]
+                # Возвращаем обновленную UI историю
+                if workflow_results.get("ui_history"):
+                    yield workflow_results["ui_history"]
+                else:
+                    # Fallback
+                    final_history = (dialog_history.copy() if dialog_history else [])
+                    final_history.append({
+                        "role": "assistant",
+                        "content": workflow_results.get("final_answer", "Не удалось получить ответ"),
+                        "metadata": {"sources": workflow_results.get("sources", [])}
+                    })
+                    yield final_history
+                    
+            finally:
+                loop.close()
             
         except Exception as e:
             logger.error(f"Ошибка в workflow streaming: {e}")
